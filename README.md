@@ -1,6 +1,6 @@
 # trk
 
-A simple time tracker.
+An unrefined cli time tracker.
 
 
 ## Usage
