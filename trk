@@ -1,0 +1,83 @@
+#! /bin/bash
+
+trkfile="$HOME/.trk"
+if [ ! -z "$TRK_FILE" ]; then
+    trkfile="$TRK_FILE"
+fi
+
+help="
+Usage:
+    trk
+        shows the current timer if active
+    trk s <entry_name>
+        starts tracking named entry
+    trk t
+        stops the current tracking
+    trk l
+        shows the full entry log
+    trk l <search_term>
+        shows the entries matching the search
+
+Options:
+    --help -h   Print this help
+"
+
+ensure_trkfile_is_present() {
+    test -r "$trkfile" && return
+    touch "$trkfile"
+}
+
+get_timestamp() {
+    date '+%Y%m%d%H%M%S'
+}
+
+is_there_a_pending_timer() {
+    tail -n1 "$trkfile" | grep '^start' >/dev/null
+    return $?
+}
+
+stop_timer() {
+    local en="$1"
+    echo "stop `get_timestamp`" >> "$trkfile"
+}
+
+start_timer() {
+    local name="$1"
+    is_there_a_pending_timer && stop_timer
+    echo "start `get_timestamp` $name" >> "$trkfile"
+}
+
+show_current_entry() {
+    if is_there_a_pending_timer; then
+        tail -n1 "$trkfile"
+    else
+        echo 'no active timer'
+    fi
+}
+
+
+command="$1"
+
+ensure_trkfile_is_present
+
+if [ -z "$command" ]; then
+    show_current_entry
+elif [ "$command" = "s" ]; then
+    name="$2"
+    if [ -z "$name" ]; then
+        echo "specify a timer name"
+        exit 1
+    fi
+    start_timer "$name"
+elif [ "$command" = "t" ]; then
+    if is_there_a_pending_timer; then
+       stop_timer
+    else
+        echo "no active timer to stop" 
+    fi
+elif [ "$command" = "l" ]; then
+    cat "$trkfile"
+else
+    echo $help
+fi
+
