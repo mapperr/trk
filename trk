@@ -168,6 +168,9 @@ print_tag_info() {
 
 show_report() {
     local now=`get_timestamp`
+
+    echo "report (with active timer included):"
+    echo
     for tag in `show_tags`; do
         total_seconds_spent=0
         for entry_start_time in `get_entry_start_timestamps "$tag"`; do
@@ -188,8 +191,11 @@ show_current_entry() {
     local entry_start_time=`echo "$current_entry_line" | sed 's/^start \([0-9]*\) .*$/\1/'`
     local tag=`echo "$current_entry_line" | sed 's/^start [0-9]* \(.*\)$/\1/'`
 
-    echo 'active timer:'
-    print_entry_info "$entry_start_time" "$tag" "$now"
+    local seconds_spent=`get_seconds_spent "$entry_start_time" "$now"`
+    local humanized_time_spent=`get_humanized_interval "$seconds_spent"`
+
+    echo "active timer:"
+    echo "$humanized_time_spent spent on $tag"
 }
 
 command="$1"
