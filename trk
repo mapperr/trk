@@ -40,7 +40,11 @@ is_there_a_pending_timer() {
 
 stop_timer() {
     local en="$1"
-    echo "stop `get_timestamp`" >> "$trkfile"
+    if is_there_a_pending_timer; then
+        echo "stop `get_timestamp`" >> "$trkfile"
+    else
+        echo "no active timer to stop" 
+    fi
 }
 
 start_timer() {
@@ -62,6 +66,14 @@ show_filtered_log() {
     grep -A1 "$filter" "$trkfile"
 }
 
+show_full_log() {
+    cat "$trkfile"
+}
+
+clean_trk() {
+    mv "$trkfile" "$trkfile.bak"
+}
+
 command="$1"
 
 ensure_trkfile_is_present
@@ -76,21 +88,16 @@ elif [ "$command" = "s" ]; then
     fi
     start_timer "$name"
 elif [ "$command" = "t" ]; then
-    if is_there_a_pending_timer; then
-       stop_timer
-    else
-        echo "no active timer to stop" 
-    fi
+    stop_timer
 elif [ "$command" = "l" ]; then
     filter="$2"
     if [ -z "$filter" ]; then
-        cat "$trkfile"
+        show_full_log
     else
         show_filtered_log "$filter"
     fi
-    cat "$trkfile"
 elif [ "$command" = "clean" ]; then
-    mv "$trkfile" "$trkfile.bak"
+    clean_trk
 else
     echo $help
 fi
