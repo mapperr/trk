@@ -15,7 +15,7 @@ An unrefined cli time tracker.
         shows the full entry log
 
 
-It's main use currently it to track the time spent on things in the current day.
+It's main use currently is to track the time spent on things in the current day.
 
 It could be much more useful if it can report a weekly tracking.
 
