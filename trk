@@ -83,7 +83,8 @@ if [ -z "$command" ]; then
 elif [ "$command" = "s" ]; then
     name="$2"
     if [ -z "$name" ]; then
-        echo "specify a timer name"
+        echo "specify a timer name:"
+        echo "`basename $0` $command <name>"
         exit 1
     fi
     start_timer "$name"
