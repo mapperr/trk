@@ -6,14 +6,16 @@ An unrefined cli time tracker.
 ## Usage
 
     trk
-        shows the current timer if active
+        shows the report and the current timer if active
     trk s <entry_name>
-        starts tracking named entry
+        starts tracking a named entry
     trk t
         stops the current tracking
     trk l
         shows the full entry log
-    trk l <search_term>
-        shows the entries matching the search
 
+
+It's main use currently it to track the time spent on things in the current day.
+
+It could be much more useful if it can report a weekly tracking.
 

@@ -30,7 +30,7 @@ ensure_trkfile_is_present() {
 }
 
 get_timestamp() {
-    date '+%Y%m%d%H%M%S'
+    date '+%s'
 }
 
 is_there_a_pending_timer() {
@@ -70,8 +70,119 @@ show_full_log() {
     cat "$trkfile"
 }
 
+show_tags() {
+    show_full_log | \
+        grep '^start [0-9]* [a-zA-Z0-9_\-\.]*' | \
+        sed 's/^start [0-9]* //' | \
+        sort | uniq
+}
+
 clean_trk() {
     mv "$trkfile" "$trkfile.bak"
+}
+
+get_entry_start_timestamps() {
+    local entry_name="$1"
+    show_full_log | \
+        grep "^start [0-9]* $tag$" | \
+        sed 's/^start //' | \
+        grep -o '^[0-9]* '
+}
+
+is_the_current_active_timer_entry() {
+    local entry_start_timestamp="$1"
+    test `show_full_log | grep -A1 "$entry_start_timestamp" | wc -l` -eq 1
+    return $?
+}
+
+get_entry_stop_timestamp() {
+    local entry_start_timestamp="$1"
+
+    is_the_current_active_timer_entry && return
+
+    show_full_log | \
+        grep -A1 "$entry_start_timestamp" \
+        | tail -n1 | sed 's/^stop //'
+}
+
+get_seconds_spent() {
+    local entry_start_time="$1"
+    local now="$2"
+
+    if is_the_current_active_timer_entry "$entry_start_time"; then
+        entry_stop_time=$now
+    else
+        entry_stop_time=`get_entry_stop_timestamp "$entry_start_time"`
+    fi
+    seconds_spent=`expr $entry_stop_time - $entry_start_time`
+    echo $seconds_spent
+}
+
+print_entry_info() {
+    local entry_start_time="$1"
+    local tag="$2"
+    local now="$3"
+
+    echo "> $entry_start_time $tag"
+    if is_the_current_active_timer_entry "$entry_start_time"; then
+        entry_stop_time=$now
+        echo "+ current timer"
+    else
+        entry_stop_time=`get_entry_stop_timestamp "$entry_start_time"`
+        echo "x $entry_stop_time"
+    fi
+    seconds_spent=`get_seconds_spent $entry_start_time $now`
+    echo "spent $seconds_spent seconds"
+}
+
+get_humanized_interval() {
+    local seconds_spent="$1"
+    
+    timeline="$seconds_spent seconds"
+    minutes_spent=`expr $seconds_spent / 60`
+    hours_spent=`expr $minutes_spent / 60`
+    if [ $seconds_spent -ge 60 ]; then
+        timeline="$minutes_spent minutes"
+    fi
+    if [ $minutes_spent -ge 60 ]; then
+        hours_in_minutes=`expr $hours_spent \* 60`
+        minutes_remainder=`expr $minutes_spent - $hours_in_minutes`
+        timeline="$hours_spent hours, $minutes_remainder minutes"
+    fi
+
+    echo "$timeline"
+}
+
+print_tag_info() {
+    local tag="$1"
+    local seconds_spent="$2"
+    echo "spent `get_humanized_interval "$seconds_spent"` on $tag"
+}
+
+show_report() {
+    local now=`get_timestamp`
+    for tag in `show_tags`; do
+        total_seconds_spent=0
+        for entry_start_time in `get_entry_start_timestamps "$tag"`; do
+            seconds_spent=`get_seconds_spent $entry_start_time $now`
+            total_seconds_spent=`expr $total_seconds_spent + $seconds_spent`
+        done
+        print_tag_info "$tag" "$total_seconds_spent"
+    done
+}
+
+show_current_entry() {
+    if ! is_there_a_pending_timer; then
+        echo 'no active timer'
+        return
+    fi
+    local now=`get_timestamp`
+    local current_entry_line=`tail -n1 "$trkfile" `
+    local entry_start_time=`echo "$current_entry_line" | sed 's/^start \([0-9]*\) .*$/\1/'`
+    local tag=`echo "$current_entry_line" | sed 's/^start [0-9]* \(.*\)$/\1/'`
+
+    echo 'active timer:'
+    print_entry_info "$entry_start_time" "$tag" "$now"
 }
 
 command="$1"
@@ -79,6 +190,8 @@ command="$1"
 ensure_trkfile_is_present
 
 if [ -z "$command" ]; then
+    show_report
+    echo
     show_current_entry
 elif [ "$command" = "s" ]; then
     name="$2"
