@@ -5,10 +5,10 @@ if [ ! -z "$TRK_FILE" ]; then
     trkfile="$TRK_FILE"
 fi
 
-help="
+read -r -d '' help <<'EOF'
 Usage:
     trk
-        shows the current timer if active
+        shows a report and the current timer, if active
     trk s <entry_name>
         starts tracking named entry
     trk t
@@ -18,15 +18,22 @@ Usage:
     trk l <search_term>
         shows the entries matching the search
     trk clean
-        remove the trk database, starts anew
+        backup the current trk log and starts anew
+    trk e
+        edit the log file directly, only for the brave
 
 Options:
     --help -h   Print this help
-"
+EOF
+
 
 ensure_trkfile_is_present() {
     test -r "$trkfile" && return
     touch "$trkfile"
+}
+
+edit_trkfile() {
+    $EDITOR "$trkfile"
 }
 
 get_timestamp() {
@@ -212,7 +219,9 @@ elif [ "$command" = "l" ]; then
     fi
 elif [ "$command" = "clean" ]; then
     clean_trk
+elif [ "$command" = "e" ]; then
+    edit_trkfile
 else
-    echo $help
+    echo "$help"
 fi
 
