@@ -17,6 +17,8 @@ Usage:
         shows the full entry log
     trk l <search_term>
         shows the entries matching the search
+    trk clean
+        remove the trk database, starts anew
 
 Options:
     --help -h   Print this help
@@ -86,6 +88,9 @@ elif [ "$command" = "l" ]; then
     else
         show_filtered_log "$filter"
     fi
+    cat "$trkfile"
+elif [ "$command" = "clean" ]; then
+    mv "$trkfile" "$trkfile.bak"
 else
     echo $help
 fi
