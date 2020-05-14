@@ -7,9 +7,9 @@ An unrefined cli time tracker.
 
     trk
         shows a report and the current timer, if active
-    trk s <entry_name>
+    trk <entry_name>
         starts tracking named entry
-    trk t
+    trk s
         stops the current tracking
     trk l
         shows the full entry log

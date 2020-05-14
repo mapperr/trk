@@ -9,9 +9,9 @@ read -r -d '' help <<'EOF'
 Usage:
     trk
         shows a report and the current timer, if active
-    trk s <entry_name>
+    trk <entry_name>
         starts tracking named entry
-    trk t
+    trk s
         stops the current tracking
     trk l
         shows the full entry log
@@ -24,6 +24,10 @@ Usage:
 
 Options:
     --help -h   Print this help
+
+
+Notes:
+    - trk log is `~/.trk`
 EOF
 
 
@@ -207,14 +211,6 @@ if [ -z "$command" ]; then
     echo
     show_current_entry
 elif [ "$command" = "s" ]; then
-    name="$2"
-    if [ -z "$name" ]; then
-        echo "specify a timer name:"
-        echo "`basename $0` $command <name>"
-        exit 1
-    fi
-    start_timer "$name"
-elif [ "$command" = "t" ]; then
     stop_timer
 elif [ "$command" = "l" ]; then
     filter="$2"
@@ -227,6 +223,9 @@ elif [ "$command" = "clean" ]; then
     clean_trk
 elif [ "$command" = "e" ]; then
     edit_trkfile
+elif [ ! -z "$command" ]; then
+    entry_name="$command"
+    start_timer "$entry_name"
 else
     echo "$help"
 fi
