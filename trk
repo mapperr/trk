@@ -13,20 +13,22 @@ Usage:
         starts tracking named entry
     trk s
         stops the current tracking
-    trk l
-        shows the full entry log
-    trk l <search_term>
-        shows the entries matching the search
+    trk a <entry_name> <time_spent>
+        adds a new entry manually, with the specified time spent
+    trk l [search_term]
+        shows the full entry log or entries matching the search
     trk clean
         backup the current trk log and starts anew
     trk e
         edit the log file directly, only for the brave
+    trk help | h
+        shows help
 
 Options:
     --help -h   Print this help
 
-
 Notes:
+    - time_spent is expressed in minutes
     - trk log is `~/.trk`
 EOF
 
@@ -164,6 +166,13 @@ get_humanized_interval() {
     echo "$timeline"
 }
 
+add_entry() {
+    local entry_name="$1"
+    local time_interval="$2"
+
+    edit_trkfile
+}
+
 print_tag_info() {
     local tag="$1"
     local seconds_spent="$2"
@@ -223,10 +232,17 @@ elif [ "$command" = "clean" ]; then
     clean_trk
 elif [ "$command" = "e" ]; then
     edit_trkfile
-elif [ ! -z "$command" ]; then
+elif [ "$command" = "a" ]; then
+    entry_name="$2"
+    time_spent="$3"
+    add_entry "$entry_name" "$time_spent"
+elif [ "$command" = "--help" ] \
+    || [ "$command" = "-h" ] \
+    || [ "$command" = "help" ] \
+    || [ "$command" = "h" ] ; then
+    echo "$help"
+else
     entry_name="$command"
     start_timer "$entry_name"
-else
-    echo "$help"
 fi
 

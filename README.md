@@ -11,14 +11,16 @@ An unrefined cli time tracker.
         starts tracking named entry
     trk s
         stops the current tracking
-    trk l
-        shows the full entry log
-    trk l <search_term>
-        shows the entries matching the search
+    trk a <entry_name> <time_spent>
+        adds a new entry manually, with the specified time spent
+    trk l [search_term]
+        shows the full entry log or entries matching the search
     trk clean
         backup the current trk log and starts anew
     trk e
         edit the log file directly, only for the brave
+    trk help | h
+        shows help
 
 
 It's main use is to track the time spent on things in the current day.
