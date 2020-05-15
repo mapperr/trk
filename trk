@@ -1,5 +1,10 @@
 #! /bin/bash
 
+# Notes:
+# it' important to keep entries start timestamps unique
+# because the stat timestamp function as an entry id
+
+
 trkfile="$HOME/.trk"
 if [ ! -z "$TRK_FILE" ]; then
     trkfile="$TRK_FILE"
@@ -15,6 +20,8 @@ Usage:
         stops the current tracking
     trk a <entry_name> <time_spent>
         adds a new entry manually, with the specified time spent
+        formatted as a `date` command spec:
+        e.g.: 1 hour, 90 minutes, 2 hours, etc.
     trk l [search_term]
         shows the full entry log or entries matching the search
     trk clean
@@ -32,6 +39,10 @@ Notes:
     - trk log is `~/.trk`
 EOF
 
+log() {
+    local msg="$1"
+    test -z "$TRKD" || echo "$msg" >&2
+}
 
 ensure_trkfile_is_present() {
     test -r "$trkfile" && return
@@ -118,15 +129,31 @@ get_entry_stop_timestamp() {
         | tail -n1 | sed 's/^stop //'
 }
 
+extract_tag_from_start_entry() {
+    local entry_line="$1"
+    local tag=`echo "$entry_line" | sed 's/^start [0-9]* \(.*\)$/\1/'`
+    echo "$tag"
+}
+
+extract_timestamp_from_start_entry() {
+    local entry_line="$1"
+    local entry_start_time=`echo "$entry_line" | sed 's/^start \([0-9]*\) .*$/\1/'`
+    echo "$entry_start_time"
+}
+
 get_seconds_spent() {
     local entry_start_time="$1"
     local now="$2"
+
+    log "now: [$now]"
 
     if is_the_current_active_timer_entry "$entry_start_time"; then
         entry_stop_time=$now
     else
         entry_stop_time=`get_entry_stop_timestamp "$entry_start_time"`
     fi
+    log "entry_start_time: [$entry_start_time]"
+    log "entry_stop_time: [$entry_stop_time]"
     seconds_spent=`expr $entry_stop_time - $entry_start_time`
     echo $seconds_spent
 }
@@ -151,6 +178,8 @@ print_entry_info() {
 get_humanized_interval() {
     local seconds_spent="$1"
     
+    log "secs spent: [$seconds_spent]"
+
     timeline="$seconds_spent seconds"
     minutes_spent=`expr $seconds_spent / 60`
     hours_spent=`expr $minutes_spent / 60`
@@ -170,7 +199,28 @@ add_entry() {
     local entry_name="$1"
     local time_interval="$2"
 
-    edit_trkfile
+    local now=`get_timestamp`
+
+    stop_time=`date -d "$time_interval" '+%s'`
+
+    if [ $now -ge "$stop_time" ]; then
+        echo "invalid time interval"
+        return 1
+    fi
+
+    if is_there_a_pending_timer; then
+        local last_entry_line=`tail -n1 "$trkfile"`
+        local tag_to_restart=`extract_tag_from_start_entry "$last_entry_line"`
+        stop_timer
+    fi
+
+    echo "start $now $entry_name" >> "$trkfile"
+    echo "stop $stop_time" >> "$trkfile"
+
+    if [ ! -z "$tag_to_restart" ]; then
+        restart_time=`expr $now + 1`
+        echo "start $restart_time $tag_to_restart" >> "$trkfile"
+    fi
 }
 
 print_tag_info() {
@@ -201,8 +251,11 @@ show_current_entry() {
     fi
     local now=`get_timestamp`
     local current_entry_line=`tail -n1 "$trkfile" `
-    local entry_start_time=`echo "$current_entry_line" | sed 's/^start \([0-9]*\) .*$/\1/'`
-    local tag=`echo "$current_entry_line" | sed 's/^start [0-9]* \(.*\)$/\1/'`
+    local entry_start_time=`extract_timestamp_from_start_entry "$current_entry_line"`
+    local tag=`extract_tag_from_start_entry "$current_entry_line"`
+
+    log "entry_start_time: [$entry_start_time]"
+    log "tag: [$tag]"
 
     local seconds_spent=`get_seconds_spent "$entry_start_time" "$now"`
     local humanized_time_spent=`get_humanized_interval "$seconds_spent"`
@@ -234,7 +287,8 @@ elif [ "$command" = "e" ]; then
     edit_trkfile
 elif [ "$command" = "a" ]; then
     entry_name="$2"
-    time_spent="$3"
+    shift 2
+    time_spent="$@"
     add_entry "$entry_name" "$time_spent"
 elif [ "$command" = "--help" ] \
     || [ "$command" = "-h" ] \

@@ -13,6 +13,8 @@ An unrefined cli time tracker.
         stops the current tracking
     trk a <entry_name> <time_spent>
         adds a new entry manually, with the specified time spent
+        formatted as a `date` command spec:
+        e.g.: 1 hour, 90 minutes, 2 hours, etc.
     trk l [search_term]
         shows the full entry log or entries matching the search
     trk clean
