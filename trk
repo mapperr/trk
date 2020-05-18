@@ -1,8 +1,9 @@
 #! /bin/bash
 
 # Notes:
-# it' important to keep entries start timestamps unique
-# because the stat timestamp function as an entry id
+# it' important to keep entries timestamps (start and stop) unique
+# because the timestamp number is like an entry id
+# and timestamps will be grep-ed by some functions
 
 
 trkfile="$HOME/.trk"
@@ -73,8 +74,13 @@ stop_timer() {
 
 start_timer() {
     local name="$1"
+
+    local now=`get_timestamp`
     is_there_a_pending_timer && stop_timer
-    echo "start `get_timestamp` $name" >> "$trkfile"
+    if grep "$now" "$trkfile" >/dev/null; then
+        now=`expr $now + 1`
+    fi
+    echo "start $now $name" >> "$trkfile"
 }
 
 show_current_entry() {
