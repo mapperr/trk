@@ -9,8 +9,8 @@ An unrefined cli time tracker.
         shows a report and the current timer, if active
     trk <entry_name>
         starts tracking named entry
-    trk s
-        stops the current tracking
+    trk s | t
+        stops (or 'terminates', is the same thing) the current tracking
     trk a <entry_name> <time_spent>
         adds a new entry manually, with the specified time spent
         formatted as a `date` command spec:
