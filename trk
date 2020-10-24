@@ -1,9 +1,11 @@
 #! /bin/bash
 
 # Notes:
-# it' important to keep entries timestamps (start and stop) unique
-# because the timestamp number is like an entry id
-# and timestamps will be grep-ed by some functions
+# - it's important to keep entries timestamps (start and stop) unique
+#   because the timestamp number is like an entry id
+#   and timestamps will be grep-ed by some functions
+# - for now keep entry tags 1 word long, I'll fix that someday
+
 
 trkfile_date_format="%Y-%m-%d"
 trkdir_default="$HOME/.trk"
@@ -72,7 +74,7 @@ get_timestamp() {
 }
 
 is_there_a_pending_timer() {
-    tail -n1 "$trkfile" | grep '^start' >/dev/null
+    get_last_trk_line | grep '^start' >/dev/null
     return $?
 }
 
@@ -98,7 +100,7 @@ start_timer() {
 
 show_current_entry() {
     if is_there_a_pending_timer; then
-        tail -n1 "$trkfile"
+        get_last_trk_line
     else
         echo 'no active timer'
     fi
@@ -109,8 +111,22 @@ show_filtered_log() {
     grep -A1 "$filter" "$trkfile"
 }
 
+show_today_log() {
+    test -r $trkfile && cat "$trkfile"
+}
+
 show_full_log() {
-    cat "$trkfile"
+    if [ 0 -eq `ls $trkdir | wc -l` ]; then
+        return
+    fi
+    cat $trkdir/*.log
+}
+
+show_today_tags() {
+    show_today_log | \
+        grep '^start [0-9]* [a-zA-Z0-9_\-\.]*' | \
+        sed 's/^start [0-9]* //' | \
+        sort | uniq
 }
 
 show_tags() {
@@ -120,8 +136,12 @@ show_tags() {
         sort | uniq
 }
 
-clean_trk() {
-    mv "$trkfile" "$trkfile.bak"
+get_today_entry_start_timestamps() {
+    local entry_name="$1"
+    show_today_log | \
+        grep "^start [0-9]* $tag$" | \
+        sed 's/^start //' | \
+        grep -o '^[0-9]* '
 }
 
 get_entry_start_timestamps() {
@@ -132,9 +152,10 @@ get_entry_start_timestamps() {
         grep -o '^[0-9]* '
 }
 
+
 is_the_current_active_timer_entry() {
     local entry_start_timestamp="$1"
-    test `show_full_log | grep -A1 "$entry_start_timestamp" | wc -l` -eq 1
+    test `show_today_log | grep -A1 "$entry_start_timestamp" | wc -l` -eq 1
     return $?
 }
 
@@ -143,9 +164,10 @@ get_entry_stop_timestamp() {
 
     is_the_current_active_timer_entry && return
 
-    show_full_log | \
-        grep -A1 "$entry_start_timestamp" \
-        | tail -n1 | sed 's/^stop //'
+    stopline=`show_full_log | grep -A1 "$entry_start_timestamp" | tail -n1 | sed 's/^stop //'`
+    if ! echo "$stopline" | grep "^start" &>/dev/null; then
+        echo $stopline 
+    fi
 }
 
 extract_tag_from_start_entry() {
@@ -173,25 +195,13 @@ get_seconds_spent() {
     fi
     log "entry_start_time: [$entry_start_time]"
     log "entry_stop_time: [$entry_stop_time]"
+    if test -z "$entry_stop_time"; then
+        unclosed_file=`grep -rlF $entry_start_time $trkdir`
+        echo "!! unclosed entry in file [$unclosed_file]" >&2
+        entry_stop_time="$entry_start_time"
+    fi
     seconds_spent=`expr $entry_stop_time - $entry_start_time`
     echo $seconds_spent
-}
-
-print_entry_info() {
-    local entry_start_time="$1"
-    local tag="$2"
-    local now="$3"
-
-    echo "> $entry_start_time $tag"
-    if is_the_current_active_timer_entry "$entry_start_time"; then
-        entry_stop_time=$now
-        echo "+ current timer"
-    else
-        entry_stop_time=`get_entry_stop_timestamp "$entry_start_time"`
-        echo "x $entry_stop_time"
-    fi
-    seconds_spent=`get_seconds_spent $entry_start_time $now`
-    echo "spent $seconds_spent seconds"
 }
 
 get_humanized_interval() {
@@ -237,7 +247,7 @@ add_entry() {
     fi
 
     if is_there_a_pending_timer; then
-        local last_entry_line=`tail -n1 "$trkfile"`
+        local last_entry_line=`get_last_trk_line`
         local tag_to_restart=`extract_tag_from_start_entry "$last_entry_line"`
         stop_timer
     fi
@@ -251,20 +261,24 @@ add_entry() {
     fi
 }
 
+get_last_trk_line() {
+    test -r $trkfile && tail -n1 "$trkfile"
+}
+
 print_tag_info() {
     local tag="$1"
     local seconds_spent="$2"
     echo "spent `get_humanized_interval "$seconds_spent"` on $tag"
 }
 
-show_report() {
+show_today_report() {
     local now=`get_timestamp`
 
     echo "report (with active timer included):"
     echo
-    for tag in `show_tags`; do
+    for tag in `show_today_tags`; do
         total_seconds_spent=0
-        for entry_start_time in `get_entry_start_timestamps "$tag"`; do
+        for entry_start_time in `get_today_entry_start_timestamps "$tag"`; do
             seconds_spent=`get_seconds_spent $entry_start_time $now`
             total_seconds_spent=`expr $total_seconds_spent + $seconds_spent`
         done
@@ -278,7 +292,7 @@ show_current_entry() {
         return
     fi
     local now=`get_timestamp`
-    local current_entry_line=`tail -n1 "$trkfile" `
+    local current_entry_line=`get_last_trk_line`
     local entry_start_time=`extract_timestamp_from_start_entry "$current_entry_line"`
     local tag=`extract_tag_from_start_entry "$current_entry_line"`
 
@@ -292,19 +306,33 @@ show_current_entry() {
     echo "$humanized_time_spent spent on $tag"
 }
 
-report() {
+show_report() {
     local from="$1"
     local to="$2"
-    echo this is a report from [$from] to [$to]
+    local now=`get_timestamp`
+
+    echo "report from [$from] to [$to]:"
+    echo
+    for tag in `show_tags`; do
+        total_seconds_spent=0
+        for entry_start_time in `get_entry_start_timestamps "$tag"`; do
+            seconds_spent=`get_seconds_spent $entry_start_time $now`
+            total_seconds_spent=`expr $total_seconds_spent + $seconds_spent`
+        done
+        print_tag_info "$tag" "$total_seconds_spent"
+    done
 }
 
+clean_trk() {
+    mv "$trkfile" "$trkfile.bak"
+}
+
+ensure_trkdir_is_present
 
 command="$1"
 
-ensure_trkfile_is_present
-
 if [ -z "$command" ]; then
-    show_report
+    show_today_report
     echo
     show_current_entry
     echo
@@ -317,7 +345,7 @@ elif [ "$command" = "s" ] \
 elif [ "$command" = "l" ]; then
     filter="$2"
     if [ -z "$filter" ]; then
-        show_full_log
+        show_today_log
     else
         show_filtered_log "$filter"
     fi
@@ -348,7 +376,7 @@ elif [ "$command" = "y" ]; then
 elif [ "$command" = "r" ]; then
     from="$2"
     to="$3"
-    report $from $to
+    show_report $from $to
 
 elif [ "$command" = "--help" ] \
     || [ "$command" = "-h" ] \
