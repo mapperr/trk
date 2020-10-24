@@ -5,29 +5,38 @@
 # because the timestamp number is like an entry id
 # and timestamps will be grep-ed by some functions
 
-
-trkfile="$HOME/.trk"
-if [ ! -z "$TRK_FILE" ]; then
-    trkfile="$TRK_FILE"
+trkfile_date_format="%Y-%m-%d"
+trkdir_default="$HOME/.trk"
+trkdir="$trkdir_default"
+if [ ! -z "$TRK_DIR" ]; then
+    trkdir="$TRK_DIR"
 fi
+trkfile="$trkdir/`date +$trkfile_date_format`.log"
 
-read -r -d '' help <<'EOF'
+read -r -d '' help <<EOF
 Usage:
     trk
-        shows a report and the current timer, if active
+        shows a "today" report and the current timer, if active
     trk <entry_name>
         starts tracking named entry
     trk s | t
         stops (or 'terminates', is the same thing) the current tracking
+    trk r [from] [to]
+        shows a report of the time range specified
+        format of the time range is $trkfile_date_format
+    trk l [search_term]
+        shows the full entry log or entries matching the search
     trk a <entry_name> <time_spent>
         adds a new entry manually, with the specified time spent
         e.g.: "1 hour", "90 minutes", "2 hours", etc.
-    trk l [search_term]
-        shows the full entry log or entries matching the search
-    trk clean
-        backup the current trk log and starts anew
     trk e
         edit the log file directly, only for the brave
+    trk clean
+        backup the current trk log and starts anew
+    trk g git_args
+        runs git with git_args in the trk dir
+    trk y
+        sync: commits eventual changes and do a pull/push of the trk dir
     trk help | h
         shows help
 
@@ -35,17 +44,23 @@ Options:
     --help -h   Print this help
 
 Notes:
-    - trk log is `~/.trk`
+    - trk default dir is [$trkdir_default]
+    - to change default trk dir set TRK_DIR env var
+    - to show debug infos set TRK_DEBUG env var to something
 EOF
 
 log() {
     local msg="$1"
-    test -z "$TRKD" || echo "$msg" >&2
+    test -z "$TRK_DEBUG" || echo "$msg" >&2
+}
+
+ensure_trkdir_is_present() {
+    test -d $trkdir || mkdir -p $trkdir
 }
 
 ensure_trkfile_is_present() {
-    test -r "$trkfile" && return
-    touch "$trkfile"
+    ensure_trkdir_is_present
+    test -f "$trkfile" || touch "$trkfile"
 }
 
 edit_trkfile() {
@@ -277,6 +292,13 @@ show_current_entry() {
     echo "$humanized_time_spent spent on $tag"
 }
 
+report() {
+    local from="$1"
+    local to="$2"
+    echo this is a report from [$from] to [$to]
+}
+
+
 command="$1"
 
 ensure_trkfile_is_present
@@ -285,9 +307,13 @@ if [ -z "$command" ]; then
     show_report
     echo
     show_current_entry
+    echo
+    echo "run [`basename $0` h] for help"
+
 elif [ "$command" = "s" ] \
     || [ "$command" = "t" ]; then
     stop_timer
+
 elif [ "$command" = "l" ]; then
     filter="$2"
     if [ -z "$filter" ]; then
@@ -295,15 +321,35 @@ elif [ "$command" = "l" ]; then
     else
         show_filtered_log "$filter"
     fi
+
 elif [ "$command" = "clean" ]; then
     clean_trk
+
 elif [ "$command" = "e" ]; then
     edit_trkfile
+
 elif [ "$command" = "a" ]; then
     entry_name="$2"
     shift 2
     time_spent="$@"
     add_entry "$entry_name" "$time_spent"
+
+elif [ "$command" = "g" ]; then
+    shift 1
+    cd $trkdir
+    git $@
+
+elif [ "$command" = "y" ]; then
+    cd $trkdir
+    git status | grep 'nothing to commit' &>/dev/null
+    test $? = 1 && git add -A && git commit -am 'trk autosync'
+    git pull && git push
+
+elif [ "$command" = "r" ]; then
+    from="$2"
+    to="$3"
+    report $from $to
+
 elif [ "$command" = "--help" ] \
     || [ "$command" = "-h" ] \
     || [ "$command" = "help" ] \
