@@ -66,7 +66,16 @@ ensure_trkfile_is_present() {
 }
 
 edit_trkfile() {
-    $EDITOR "$trkfile"
+    local filename="$1"
+    local filepath="$trkdir/$file_name.log"
+
+    if test -z "$filename"; then
+        $EDITOR "$trkfile"
+    elif test -r ; then
+        $EDITOR "$filepath"
+    else
+        echo "no trk file named [$filename]" >&2
+    fi
 }
 
 get_timestamp() {
@@ -343,18 +352,14 @@ elif [ "$command" = "s" ] \
     stop_timer
 
 elif [ "$command" = "l" ]; then
-    filter="$2"
-    if [ -z "$filter" ]; then
-        show_today_log
-    else
-        show_filtered_log "$filter"
-    fi
+    ls -1 $trkdir | sed 's/\.log//'
 
 elif [ "$command" = "clean" ]; then
     clean_trk
 
 elif [ "$command" = "e" ]; then
-    edit_trkfile
+    file_name="$2"
+    edit_trkfile $file_name
 
 elif [ "$command" = "a" ]; then
     entry_name="$2"
