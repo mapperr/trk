@@ -90,7 +90,7 @@ is_there_a_pending_timer() {
 stop_timer() {
     local en="$1"
     if is_there_a_pending_timer; then
-        echo "stop `get_timestamp`" >> "$trkfile"
+        echo "stop  `get_timestamp`" >> "$trkfile"
     else
         echo "no active timer to stop" 
     fi
