@@ -285,14 +285,18 @@ show_today_report() {
 
     echo "report (with active timer included):"
     echo
+    total_seconds_spent=0
     for tag in `show_today_tags`; do
-        total_seconds_spent=0
+        tag_seconds_spent=0
         for entry_start_time in `get_today_entry_start_timestamps "$tag"`; do
             seconds_spent=`get_seconds_spent $entry_start_time $now`
-            total_seconds_spent=`expr $total_seconds_spent + $seconds_spent`
+            tag_seconds_spent=`expr $tag_seconds_spent + $seconds_spent`
         done
-        print_tag_info "$tag" "$total_seconds_spent"
+        print_tag_info "$tag" "$tag_seconds_spent"
+        total_seconds_spent=`expr $total_seconds_spent + $tag_seconds_spent`
     done
+    echo
+    echo "total time spent: [`get_humanized_interval "$total_seconds_spent"`]"
 }
 
 show_current_entry() {
@@ -322,14 +326,18 @@ show_report() {
 
     echo "report from [$from] to [$to]:"
     echo
+    total_seconds_spent=0
     for tag in `show_tags`; do
-        total_seconds_spent=0
+        tag_seconds_spent=0
         for entry_start_time in `get_entry_start_timestamps "$tag"`; do
             seconds_spent=`get_seconds_spent $entry_start_time $now`
-            total_seconds_spent=`expr $total_seconds_spent + $seconds_spent`
+            tag_seconds_spent=`expr $tag_seconds_spent + $seconds_spent`
         done
-        print_tag_info "$tag" "$total_seconds_spent"
+        print_tag_info "$tag" "$tag_seconds_spent"
+        total_seconds_spent=`expr $total_seconds_spent + $tag_seconds_spent`
     done
+    echo
+    echo "total time spent: [`get_humanized_interval "$total_seconds_spent"`]"
 }
 
 clean_trk() {
