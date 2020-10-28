@@ -262,7 +262,7 @@ add_entry() {
     fi
 
     echo "start $now $entry_name" >> "$trkfile"
-    echo "stop $stop_time" >> "$trkfile"
+    echo "stop  $stop_time" >> "$trkfile"
 
     if [ ! -z "$tag_to_restart" ]; then
         restart_time=`expr $now + 1`
