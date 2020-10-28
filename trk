@@ -20,25 +20,25 @@ Usage:
     trk
         shows a "today" report and the current timer, if active
     trk <entry_name>
-        starts tracking named entry
-    trk s | t
-        stops (or 'terminates', is the same thing) the current tracking
+        starts timer tracking a named entry
+    trk t
+        terminates the current timer
     trk r [from] [to]
         shows a report of the time range specified
         format of the time range is $trkfile_date_format
-    trk l [search_term]
-        shows the full entry log or entries matching the search
+    trk l
+        lists the trk files
     trk a <entry_name> <time_spent>
         adds a new entry manually, with the specified time spent
         e.g.: "1 hour", "90 minutes", "2 hours", etc.
-    trk e
-        edit the log file directly, only for the brave
+    trk e [trk_file]
+        edit the trk file directly, only for the brave
     trk clean
-        backup the current trk log and starts anew
-    trk g git_args
-        runs git with git_args in the trk dir
+        backup the current trk file and starts anew
     trk y
         sync: commits eventual changes and do a pull/push of the trk dir
+    trk g git_args
+        runs git with git_args in the trk dir
     trk help | h
         shows help
 
