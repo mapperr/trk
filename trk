@@ -98,8 +98,9 @@ stop_timer() {
 
 start_timer() {
     local name="$1"
-
     local now=`get_timestamp`
+
+    ensure_trkfile_is_present
     is_there_a_pending_timer && stop_timer
     if grep "$now" "$trkfile" >/dev/null; then
         now=`expr $now + 1`
