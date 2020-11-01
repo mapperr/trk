@@ -16,45 +16,55 @@ cd "`dirname \"$PRG\"`/" >/dev/null
 SCRIPTDIR="`pwd -P`"
 # =========================
 
+if test -z "$SHUNIT_SCRIPT"; then
+    echo "
+    to run those tests set the SHUNIT_SCRIPT
+    env var to the path of shunit2 script
+    
+    es: export SHUNIT_SCRIPT=\$HOME/shunit2/shunit2
+
+    see this link for more infos:
+    https://github.com/kward/shunit2"
+    exit 1
+fi
+
 trk="./trk"
 export TRK_DEBUG=1
 export TRK_DIR="/tmp/trkdir_test"
 
+# import variables definitions
+eval `$trk env`
+
 cleanup() {
-    test -d "$TRK_DIR" && rm -rf "$TRK_DIR"
-}
-
-assert_equal() {
-    local act="$1"
-    local exp="$2"
-
-    if test ! "$act" = "$exp"; then
-        echo "FAILED: [$act] is not equal to [$exp]" >&2
-        return 1
+    if test -d "$trkdir"; then
+       rm -rf "$trkdir"
     fi
 }
 
+setUp() {
+    cleanup
+}
+
 test_start_a_timer() {
-    err=`$trk test 2>/dev/stdout >/dev/null`
-    assert_equal "$err" ""; test $? -ne 0 && return 1
+    $trk test
+    assertTrue "test -f $trk_active_file"
 }
 
 test_stop_a_timer() {
-    err=`$trk test 2>/dev/stdout >/dev/null`
-    assert_equal "$err" ""; test $? -ne 0 && return 1
-    err=`$trk t 2>/dev/stdout >/dev/null`
-    assert_equal "$err" ""; test $? -ne 0 && return 1
+    $trk testing
+    sleep 1
+    $trk t
+    assertTrue 'trk active file is not empty after a stop' \
+        "test -z \"`head -n1 $trk_active_file`\""
+    assertEquals "testing 1s" "`cat $trkfile`"
 }
 
+test_report_today() {
+    $trk testing
+    sleep 1
+    $trk t
+    trk_report=`$trk`
+    assertTrue "echo \"$trk_report\" | grep testing >/dev/null"
+}
 
-enabled_tests='
-test_start_a_timer
-test_stop_a_timer
-'
-
-cleanup
-for f in $enabled_tests; do
-    echo "executing [$f]"
-    $f
-    cleanup
-done
+. $SHUNIT_SCRIPT

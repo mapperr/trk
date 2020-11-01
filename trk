@@ -1,12 +1,5 @@
 #! /bin/bash
 
-# Notes:
-# - it's important to keep entries timestamps (start and stop) unique
-#   because the timestamp number is like an entry id
-#   and timestamps will be grep-ed by some functions
-# - for now keep entry tags 1 word long, I'll fix that someday
-
-
 trkfile_date_format="%Y-%m-%d"
 trkdir_default="$HOME/.trk"
 trkdir="$trkdir_default"
@@ -14,6 +7,23 @@ if [ ! -z "$TRK_DIR" ]; then
     trkdir="$TRK_DIR"
 fi
 trkfile="$trkdir/`date +$trkfile_date_format`.log"
+trk_active_file="$trkdir/active_timer"
+
+trk_workday_hours_default=8
+trk_workday_hours=$trk_workday_hours_default
+if [ ! -z "$TRK_WORKDAY_HOURS" ]; then
+    trk_workday_hours="$TRK_WORKDAY_HOURS"
+fi
+
+tag_valid_regex="[0-9A-Za-z_-]"
+
+print_env() {
+echo "
+export trkdir=$trkdir
+export trk_active_file=$trk_active_file
+export trkfile=$trkfile
+"
+}
 
 read -r -d '' help <<EOF
 Usage:
@@ -39,6 +49,9 @@ Usage:
         sync: commits eventual changes and do a pull/push of the trk dir
     trk g git_args
         runs git with git_args in the trk dir
+    trk env
+        prints exports of trk vars,
+        eval-uating this output is useful for testing
     trk help | h
         shows help
 
@@ -48,6 +61,8 @@ Options:
 Notes:
     - trk default dir is [$trkdir_default]
     - to change default trk dir set TRK_DIR env var
+    - trk default workday hours is 8
+    - to change workday hours set TRK_WORKDAY_HOURS env var
     - to show debug infos set TRK_DEBUG env var to something
 EOF
 
@@ -83,32 +98,36 @@ get_timestamp() {
 }
 
 is_there_a_pending_timer() {
-    get_last_trk_line | grep '^start' >/dev/null
-    return $?
+    test -f $trk_active_file || return 2
+    test ! -z "`cat $trk_active_file`"
 }
 
 stop_timer() {
-    local en="$1"
+    ensure_trkfile_is_present
     if is_there_a_pending_timer; then
-        echo "stop  `get_timestamp`" >> "$trkfile"
+        tag=`cat "$trk_active_file" | cut -d ' ' -f 1`
+        start_ts=`cat "$trk_active_file" | cut -d ' ' -f 2`
+        log "start timestamp: [$start_ts]"
+        now=`get_timestamp`
+        seconds_spent=`expr $now - $start_ts`
+        humanized_time_spent=`get_humanized_interval "$seconds_spent"`
+        echo "$tag $humanized_time_spent" >> "$trkfile"
+        echo -n '' > "$trk_active_file"
     else
         echo "no active timer to stop" 
     fi
 }
 
 start_timer() {
-    local name="$1"
+    local tag="$1"
     local now=`get_timestamp`
 
     ensure_trkfile_is_present
     is_there_a_pending_timer && stop_timer
-    if grep "$now" "$trkfile" >/dev/null; then
-        now=`expr $now + 1`
-    fi
-    echo "start $now $name" >> "$trkfile"
+    echo "$tag $now" >> "$trk_active_file"
 }
 
-show_current_entry() {
+show_current_entry_() {
     if is_there_a_pending_timer; then
         get_last_trk_line
     else
@@ -122,11 +141,11 @@ show_filtered_log() {
 }
 
 show_today_log() {
-    test -r $trkfile && cat "$trkfile"
+    test -r "$trkfile" && cat "$trkfile"
 }
 
 show_full_log() {
-    if [ 0 -eq `ls $trkdir | wc -l` ]; then
+    if [ 0 -eq `ls "$trkdir" | wc -l` ]; then
         return
     fi
     cat $trkdir/*.log
@@ -134,15 +153,13 @@ show_full_log() {
 
 show_today_tags() {
     show_today_log | \
-        grep '^start [0-9]* [a-zA-Z0-9_\-\.]*' | \
-        sed 's/^start [0-9]* //' | \
+        grep '^[a-zA-Z0-9_\-\.]*' | \
         sort | uniq
 }
 
 show_tags() {
     show_full_log | \
-        grep '^start [0-9]* [a-zA-Z0-9_\-\.]*' | \
-        sed 's/^start [0-9]* //' | \
+        grep '^[a-zA-Z0-9_\-\.]*' | \
         sort | uniq
 }
 
@@ -207,7 +224,6 @@ get_seconds_spent() {
     log "entry_stop_time: [$entry_stop_time]"
     if test -z "$entry_stop_time"; then
         unclosed_file=`grep -rlF $entry_start_time $trkdir`
-        echo "!! unclosed entry in file [$unclosed_file]" >&2
         entry_stop_time="$entry_start_time"
     fi
     seconds_spent=`expr $entry_stop_time - $entry_start_time`
@@ -219,16 +235,33 @@ get_humanized_interval() {
     
     log "secs spent: [$seconds_spent]"
 
-    timeline="$seconds_spent seconds"
+    timeline="${seconds_spent}s"
     minutes_spent=`expr $seconds_spent / 60`
     hours_spent=`expr $minutes_spent / 60`
-    if [ $seconds_spent -ge 60 ]; then
-        timeline="$minutes_spent minutes"
-    fi
-    if [ $minutes_spent -ge 60 ]; then
+    days_spent=`expr $hours_spent / $trk_workday_hours`
+    if [ $hours_spent -ge $trk_workday_hours ]; then
+        days_in_hours=`expr $days_spent \* $trk_workday_hours`
+        hours_remainder=`expr $hours_spent - $days_in_hours`
         hours_in_minutes=`expr $hours_spent \* 60`
         minutes_remainder=`expr $minutes_spent - $hours_in_minutes`
-        timeline="$hours_spent hours, $minutes_remainder minutes"
+        timeline="${days_spent}d"
+        test $hours_remainder -gt 0 && \
+            timeline="${days_spent}d${hours_remainder}h"
+        test $minutes_remainder -gt 0 && \
+            timeline="${days_spent}d${minutes_remainder}m"
+        test $hours_remainder -gt 0 && \
+            test $minutes_remainder -gt 0 && \
+        timeline="${days_spent}d${hours_remainder}h${minutes_remainder}m"
+
+    elif [ $minutes_spent -ge 60 ]; then
+        hours_in_minutes=`expr $hours_spent \* 60`
+        minutes_remainder=`expr $minutes_spent - $hours_in_minutes`
+        timeline="${hours_spent}h"
+        test $minutes_remainder -gt 0 && \
+            timeline="${hours_spent}h${minutes_remainder}m"
+
+    elif [ $seconds_spent -ge 60 ]; then
+        timeline="${minutes_spent}m"
     fi
 
     echo "$timeline"
@@ -300,6 +333,33 @@ show_today_report() {
     echo "total time spent: [`get_humanized_interval "$total_seconds_spent"`]"
 }
 
+get_unique_tag_list() {
+    local trkfile_to_compact="$1"
+    test -z "$trkfile_to_compact" && trkfile_to_compact="$trkfile"
+    cat $trkfile_to_compact | grep "^$tag_valid_regex" | sort | uniq
+}
+
+compact_tags() {
+    local trkfile_to_compact="$1"
+    test -z "$trkfile_to_compact" && trkfile_to_compact="$trkfile"
+    local temp_trk_file="/tmp/`basename $trkfile_to_compact`"
+
+    test -f $temp_trk_file && rm -f $temp_trk_file
+    unique_tag_list=`get_unique_tag_list "$trkfile_to_compact"`
+    for tag in $unique_tag_list; do
+        tag_total_seconds_spent=0
+        for entry in `grep "^$tag" $trkfile_to_compact`; do
+            time_spent=`echo "$entry" | cut -d ' ' -f 2`
+            seconds_spent=`get_seconds_spent $time_spent`
+            tag_total_seconds_spent=`expr $tag_total_seconds_spent + $seconds_spent`
+        done
+        humanized_time_spent=`get_humanized_interval "$tag_total_seconds_spent"`
+        echo "$tag $humanized_time_spent" >> "$temp_trk_file"
+    done
+    mv -f "$temp_trk_file" "$trkfile_to_compact"
+    test -f "$temp_trk_file" && rm -f "$temp_trk_file"
+}
+
 show_current_entry() {
     if ! is_there_a_pending_timer; then
         echo 'no active timer'
@@ -356,22 +416,24 @@ if [ -z "$command" ]; then
     echo
     echo "run [`basename $0` h] for help"
 
-elif [ "$command" = "s" ] \
-    || [ "$command" = "t" ]; then
-    stop_timer
-
-elif [ "$command" = "l" ]; then
-    ls -1 $trkdir | sed 's/\.log//'
-
-elif [ "$command" = "e" ]; then
-    file_name="$2"
-    edit_trkfile $file_name
-
 elif [ "$command" = "a" ]; then
     entry_name="$2"
     shift 2
     time_spent="$@"
     add_entry "$entry_name" "$time_spent"
+
+elif [ "$command" = "s" ] \
+    || [ "$command" = "t" ]; then
+    stop_timer
+
+elif [ "$command" = "l" ]; then
+    cd $trkdir
+    ls -1 *.log | sed 's/\.log//'
+    cd - >/dev/null
+
+elif [ "$command" = "e" ]; then
+    file_name="$2"
+    edit_trkfile $file_name
 
 elif [ "$command" = "r" ]; then
     from="$2"
@@ -391,6 +453,9 @@ elif [ "$command" = "g" ]; then
 
 elif [ "$command" = "clean" ]; then
     clean_trk
+
+elif [ "$command" = "env" ]; then
+    print_env
 
 elif [ "$command" = "--help" ] \
     || [ "$command" = "-h" ] \
