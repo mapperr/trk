@@ -1,0 +1,60 @@
+#! /bin/sh
+
+# taken from gradlew
+PRG="$0"
+while [ -h "$PRG" ] ; do
+    ls=`ls -ld "$PRG"`
+    link=`expr "$ls" : '.*-> \(.*\)$'`
+    if expr "$link" : '/.*' > /dev/null; then
+        PRG="$link"
+    else
+        PRG=`dirname "$PRG"`"/$link"
+    fi
+done
+SAVED="`pwd`"
+cd "`dirname \"$PRG\"`/" >/dev/null
+SCRIPTDIR="`pwd -P`"
+# =========================
+
+trk="./trk"
+export TRK_DEBUG=1
+export TRK_DIR="/tmp/trkdir_test"
+
+cleanup() {
+    test -d "$TRK_DIR" && rm -rf "$TRK_DIR"
+}
+
+assert_equal() {
+    local act="$1"
+    local exp="$2"
+
+    if test ! "$act" = "$exp"; then
+        echo "FAILED: [$act] is not equal to [$exp]" >&2
+        return 1
+    fi
+}
+
+test_start_a_timer() {
+    err=`$trk test 2>/dev/stdout >/dev/null`
+    assert_equal "$err" ""; test $? -ne 0 && return 1
+}
+
+test_stop_a_timer() {
+    err=`$trk test 2>/dev/stdout >/dev/null`
+    assert_equal "$err" ""; test $? -ne 0 && return 1
+    err=`$trk t 2>/dev/stdout >/dev/null`
+    assert_equal "$err" ""; test $? -ne 0 && return 1
+}
+
+
+enabled_tests='
+test_start_a_timer
+test_stop_a_timer
+'
+
+cleanup
+for f in $enabled_tests; do
+    echo "executing [$f]"
+    $f
+    cleanup
+done
