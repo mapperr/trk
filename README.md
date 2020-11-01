@@ -12,9 +12,8 @@ An unrefined cli time tracker.
             starts timer tracking a named entry
         trk t
             terminates the current timer
-        trk r [from] [to]
-            shows a report of the time range specified
-            format of the time range is %Y-%m-%d
+        trk r
+            shows a report of all entries
         trk l
             lists the trk files
         trk a <entry_name> <time_spent>
