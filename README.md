@@ -45,3 +45,10 @@ It's main use is to track the time spent on things in the current day.
 It could be much more useful if it can report, say,
 a weekly and monthly tracking.
 
+### Improvements
+
+1. make entries time interval human-editable
+2. implement simple reports with a user-specified time interval
+    (and a few custom ones, like 'week', 'month', 'lastweek', etc)
+3. make possible to add a description to an entry
+
