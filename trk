@@ -363,9 +363,6 @@ elif [ "$command" = "s" ] \
 elif [ "$command" = "l" ]; then
     ls -1 $trkdir | sed 's/\.log//'
 
-elif [ "$command" = "clean" ]; then
-    clean_trk
-
 elif [ "$command" = "e" ]; then
     file_name="$2"
     edit_trkfile $file_name
@@ -376,10 +373,10 @@ elif [ "$command" = "a" ]; then
     time_spent="$@"
     add_entry "$entry_name" "$time_spent"
 
-elif [ "$command" = "g" ]; then
-    shift 1
-    cd $trkdir
-    git $@
+elif [ "$command" = "r" ]; then
+    from="$2"
+    to="$3"
+    show_report $from $to
 
 elif [ "$command" = "y" ]; then
     cd $trkdir
@@ -387,10 +384,13 @@ elif [ "$command" = "y" ]; then
     test $? = 1 && git add -A && git commit -am 'trk autosync'
     git pull && git push
 
-elif [ "$command" = "r" ]; then
-    from="$2"
-    to="$3"
-    show_report $from $to
+elif [ "$command" = "g" ]; then
+    shift 1
+    cd $trkdir
+    git $@
+
+elif [ "$command" = "clean" ]; then
+    clean_trk
 
 elif [ "$command" = "--help" ] \
     || [ "$command" = "-h" ] \
