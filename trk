@@ -177,9 +177,11 @@ get_seconds_from_time_spent() {
     minutes=`echo "$time_spent" | grep -o '[0-9]*m' | tr -d 'm'`
     seconds=`echo "$time_spent" | grep -o '[0-9]*s' | tr -d 's'`
     
-    dateline=""
-    test -z "$days" || dateline="$days days"
-    test -z "$hours" || dateline="$dateline $hours hours"
+    workdays_in_hours=0
+    test -z "$days" || \
+       workdays_in_hours=`expr $trk_workday_hours \* $days`
+    test -z "$hours" && hours=0
+    dateline="`expr $workdays_in_hours + $hours` hours"
     test -z "$minutes" || dateline="$dateline $minutes minutes"
     test -z "$seconds" || dateline="$dateline $seconds seconds"
 
@@ -188,13 +190,14 @@ get_seconds_from_time_spent() {
     now=`get_timestamp`
     future=`date -d "$dateline" '+%s'`
     secsspent=`expr $future - $now`
+    log "time spent [$time_spent] is [$secsspent] seconds"
     echo -n "$secsspent"
 }
 
 get_humanized_interval() {
     local seconds_spent="$1"
     
-    log "secs spent: [$seconds_spent]"
+    log "converting [$seconds_spent] seconds to time spent"
 
     timeline="${seconds_spent}s"
     minutes_spent=`expr $seconds_spent / 60`
@@ -226,6 +229,7 @@ get_humanized_interval() {
         timeline="${minutes_spent}m"
     fi
 
+    log "[$seconds_spent] seconds are [$timeline] time spent"
     echo "$timeline"
 }
 
