@@ -22,7 +22,7 @@ if [ ! -z "$TMPDIR" ]; then
     tmpdir="$TMPDIR"
 fi
 
-tag_valid_regex="[0-9A-Za-z_-]"
+tag_valid_regex='[0-9A-Za-z_-]*'
 
 print_env() {
 echo "
@@ -183,12 +183,12 @@ get_seconds_from_time_spent() {
     test -z "$minutes" || dateline="$dateline $minutes minutes"
     test -z "$seconds" || dateline="$dateline $seconds seconds"
 
-    log "dateline $dateline"
+    log "dateline [$dateline]"
 
     now=`get_timestamp`
     future=`date -d "$dateline" '+%s'`
     secsspent=`expr $future - $now`
-
+    echo -n "$secsspent"
 }
 
 get_humanized_interval() {
@@ -242,7 +242,9 @@ add_entry() {
         exit 1
     fi
 
-    echo "$tag $time_spent" >> "$trkfile"
+    entry="$tag $time_spent"
+    log "adding entry [$entry]"
+    echo "$entry" >> "$trkfile"
     compact_tags "$trkfile"
 }
 
@@ -278,7 +280,7 @@ show_today_report() {
 get_unique_tag_list() {
     local trkfile_to_compact="$1"
     test -z "$trkfile_to_compact" && trkfile_to_compact="$trkfile"
-    cat $trkfile_to_compact | grep "^$tag_valid_regex" | sort | uniq
+    cat $trkfile_to_compact | grep -o "^$tag_valid_regex" | sort | uniq
 }
 
 compact_tags() {
@@ -289,12 +291,18 @@ compact_tags() {
     test -f $temp_trk_file && rm -f $temp_trk_file
     unique_tag_list=`get_unique_tag_list "$trkfile_to_compact"`
     for tag in $unique_tag_list; do
+        log "processing tag [$tag]"
         tag_total_seconds_spent=0
-        for entry in `grep "^$tag" $trkfile_to_compact`; do
+        while read entry; do
+            echo -n "$entry" | \
+                grep "^$tag " >/dev/null || \
+                continue
+            log "found entry [$entry]"
             time_spent=`echo "$entry" | cut -d ' ' -f 2`
+            log "time_spent [$time_spent]"
             seconds_spent=`get_seconds_from_time_spent $time_spent`
             tag_total_seconds_spent=`expr $tag_total_seconds_spent + $seconds_spent`
-        done
+        done < "$trkfile_to_compact"
         humanized_time_spent=`get_humanized_interval "$tag_total_seconds_spent"`
         echo "$tag $humanized_time_spent" >> "$temp_trk_file"
     done
@@ -359,9 +367,9 @@ if [ -z "$command" ]; then
     echo "run [`basename $0` h] for help"
 
 elif [ "$command" = "a" ]; then
-    entry_name="$2"
-    shift 2
-    time_spent="$@"
+    shift 1
+    entry_name="$1"
+    time_spent="$2"
     add_entry "$entry_name" "$time_spent"
 
 elif [ "$command" = "s" ] \
