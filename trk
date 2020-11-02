@@ -127,14 +127,6 @@ start_timer() {
     echo "$tag $now" >> "$trk_active_file"
 }
 
-show_current_entry_() {
-    if is_there_a_pending_timer; then
-        get_last_trk_line
-    else
-        echo 'no active timer'
-    fi
-}
-
 show_filtered_log() {
     local filter="$1"
     grep -A1 "$filter" "$trkfile"
@@ -163,71 +155,32 @@ show_tags() {
         sort | uniq
 }
 
-get_today_entry_start_timestamps() {
-    local entry_name="$1"
-    show_today_log | \
-        grep "^start [0-9]* $tag$" | \
-        sed 's/^start //' | \
-        grep -o '^[0-9]* '
-}
-
-get_entry_start_timestamps() {
-    local entry_name="$1"
-    show_full_log | \
-        grep "^start [0-9]* $tag$" | \
-        sed 's/^start //' | \
-        grep -o '^[0-9]* '
-}
-
-
 is_the_current_active_timer_entry() {
     local entry_start_timestamp="$1"
     test `show_today_log | grep -A1 "$entry_start_timestamp" | wc -l` -eq 1
     return $?
 }
 
-get_entry_stop_timestamp() {
-    local entry_start_timestamp="$1"
+get_seconds_from_time_spent() {
+    local time_spent="$1"
 
-    is_the_current_active_timer_entry && return
+    days=`echo "$time_spent" | grep -o '[0-9]*d' | tr -d 'd'`
+    hours=`echo "$time_spent" | grep -o '[0-9]*h' | tr -d 'h'`
+    minutes=`echo "$time_spent" | grep -o '[0-9]*m' | tr -d 'm'`
+    seconds=`echo "$time_spent" | grep -o '[0-9]*s' | tr -d 's'`
+    
+    dateline=""
+    test -z "$days" || dateline="$days days"
+    test -z "$hours" || dateline="$dateline $hours hours"
+    test -z "$minutes" || dateline="$dateline $minutes minutes"
+    test -z "$seconds" || dateline="$dateline $seconds seconds"
 
-    stopline=`show_full_log | grep -A1 "$entry_start_timestamp" | tail -n1 | sed 's/^stop //'`
-    if ! echo "$stopline" | grep "^start" &>/dev/null; then
-        echo $stopline 
-    fi
-}
+    log "dateline $dateline"
 
-extract_tag_from_start_entry() {
-    local entry_line="$1"
-    local tag=`echo "$entry_line" | sed 's/^start [0-9]* \(.*\)$/\1/'`
-    echo "$tag"
-}
+    now=`get_timestamp`
+    future=`date -d "$dateline" '+%s'`
+    secsspent=`expr $future - $now`
 
-extract_timestamp_from_start_entry() {
-    local entry_line="$1"
-    local entry_start_time=`echo "$entry_line" | sed 's/^start \([0-9]*\) .*$/\1/'`
-    echo "$entry_start_time"
-}
-
-get_seconds_spent() {
-    local entry_start_time="$1"
-    local now="$2"
-
-    log "now: [$now]"
-
-    if is_the_current_active_timer_entry "$entry_start_time"; then
-        entry_stop_time=$now
-    else
-        entry_stop_time=`get_entry_stop_timestamp "$entry_start_time"`
-    fi
-    log "entry_start_time: [$entry_start_time]"
-    log "entry_stop_time: [$entry_stop_time]"
-    if test -z "$entry_stop_time"; then
-        unclosed_file=`grep -rlF $entry_start_time $trkdir`
-        entry_stop_time="$entry_start_time"
-    fi
-    seconds_spent=`expr $entry_stop_time - $entry_start_time`
-    echo $seconds_spent
 }
 
 get_humanized_interval() {
@@ -239,6 +192,7 @@ get_humanized_interval() {
     minutes_spent=`expr $seconds_spent / 60`
     hours_spent=`expr $minutes_spent / 60`
     days_spent=`expr $hours_spent / $trk_workday_hours`
+
     if [ $hours_spent -ge $trk_workday_hours ]; then
         days_in_hours=`expr $days_spent \* $trk_workday_hours`
         hours_remainder=`expr $hours_spent - $days_in_hours`
@@ -268,40 +222,20 @@ get_humanized_interval() {
 }
 
 add_entry() {
-    local entry_name="$1"
-    local time_interval="$2"
+    local tag="$1"
+    local time_spent="$2"
 
-    if [ -z "$entry_name" ]; then
-        echo "missing entry_name"
+    if [ -z "$tag" ]; then
+        echo "missing tag"
         exit 1
     fi
-    if [ -z "$time_interval" ]; then
-        echo "missing time_interval"
+    if [ -z "$time_spent" ]; then
+        echo "missing time spent"
         exit 1
     fi
 
-    local now=`get_timestamp`
-
-    stop_time=`date -d "$time_interval" '+%s'`
-
-    if [ $now -ge "$stop_time" ]; then
-        echo "invalid time interval"
-        return 1
-    fi
-
-    if is_there_a_pending_timer; then
-        local last_entry_line=`get_last_trk_line`
-        local tag_to_restart=`extract_tag_from_start_entry "$last_entry_line"`
-        stop_timer
-    fi
-
-    echo "start $now $entry_name" >> "$trkfile"
-    echo "stop  $stop_time" >> "$trkfile"
-
-    if [ ! -z "$tag_to_restart" ]; then
-        restart_time=`expr $now + 1`
-        echo "start $restart_time $tag_to_restart" >> "$trkfile"
-    fi
+    echo "$tag $time_spent" >> "$trkfile"
+    compact_tags "$trkfile"
 }
 
 get_last_trk_line() {
@@ -342,7 +276,7 @@ get_unique_tag_list() {
 compact_tags() {
     local trkfile_to_compact="$1"
     test -z "$trkfile_to_compact" && trkfile_to_compact="$trkfile"
-    local temp_trk_file="/tmp/`basename $trkfile_to_compact`"
+    local temp_trk_file="/tmp/`basename $trkfile_to_compact`-compacting"
 
     test -f $temp_trk_file && rm -f $temp_trk_file
     unique_tag_list=`get_unique_tag_list "$trkfile_to_compact"`
@@ -350,7 +284,7 @@ compact_tags() {
         tag_total_seconds_spent=0
         for entry in `grep "^$tag" $trkfile_to_compact`; do
             time_spent=`echo "$entry" | cut -d ' ' -f 2`
-            seconds_spent=`get_seconds_spent $time_spent`
+            seconds_spent=`get_seconds_from_time_spent $time_spent`
             tag_total_seconds_spent=`expr $tag_total_seconds_spent + $seconds_spent`
         done
         humanized_time_spent=`get_humanized_interval "$tag_total_seconds_spent"`

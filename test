@@ -59,12 +59,12 @@ test_stop_a_timer() {
     assertEquals "testing 1s" "`cat $trkfile`"
 }
 
-test_report_today() {
-    $trk testing
-    sleep 1
-    $trk t
-    trk_report=`$trk`
-    assertTrue "echo \"$trk_report\" | grep testing >/dev/null"
+test_add_entry() {
+    $trk a testing 1h
+    assertTrue "grep 'testing 1h' $trkfile >/dev/null"
+    $trk a testing 1h
+    assertTrue "grep 'testing 2h' $trkfile >/dev/null"
 }
+
 
 . $SHUNIT_SCRIPT
