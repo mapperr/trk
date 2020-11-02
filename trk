@@ -39,6 +39,9 @@ Usage:
         shows a "today" report and the current timer, if active
     trk <entry_name>
         starts timer tracking a named entry
+    trk <entry_name> <time_spent>
+        adds a new entry manually, with the specified time spent
+        e.g.: "1h", "1h20m", "2d", etc.
     trk t
         terminates the current timer
     trk r [from] [to]
@@ -46,9 +49,6 @@ Usage:
         format of the time range is $trkfile_date_format
     trk l
         lists the trk files
-    trk a <entry_name> <time_spent>
-        adds a new entry manually, with the specified time spent
-        e.g.: "1 hour", "90 minutes", "2 hours", etc.
     trk e [trk_file]
         edit the trk file directly, only for the brave
     trk clean
@@ -366,12 +366,6 @@ if [ -z "$command" ]; then
     echo
     echo "run [`basename $0` h] for help"
 
-elif [ "$command" = "a" ]; then
-    shift 1
-    entry_name="$1"
-    time_spent="$2"
-    add_entry "$entry_name" "$time_spent"
-
 elif [ "$command" = "s" ] \
     || [ "$command" = "t" ]; then
     stop_timer
@@ -413,7 +407,12 @@ elif [ "$command" = "--help" ] \
     || [ "$command" = "h" ] ; then
     echo "$help"
 else
-    entry_name="$command"
-    start_timer "$entry_name"
+    tag="$command"
+    time_spent="$2"
+    if test -z "$time_spent"; then
+        start_timer "$tag"
+    else
+        add_entry "$tag" "$time_spent"
+    fi
 fi
 
