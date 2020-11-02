@@ -29,8 +29,11 @@ if test -z "$SHUNIT_SCRIPT"; then
 fi
 
 trk="./trk"
+
 export TRK_DEBUG=1
 export TRK_DIR="/tmp/trkdir_test"
+test -z "$TMPDIR" || \
+    export TRK_DIR="$TMPDIR/trkdir_test"
 
 # import variables definitions
 eval `$trk env`

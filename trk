@@ -15,6 +15,13 @@ if [ ! -z "$TRK_WORKDAY_HOURS" ]; then
     trk_workday_hours="$TRK_WORKDAY_HOURS"
 fi
 
+tmpdir_default='/tmp'
+tmpdir="$tmpdir_default"
+if [ ! -z "$TMPDIR" ]; then
+    # works in termux
+    tmpdir="$TMPDIR"
+fi
+
 tag_valid_regex="[0-9A-Za-z_-]"
 
 print_env() {
@@ -22,6 +29,7 @@ echo "
 export trkdir=$trkdir
 export trk_active_file=$trk_active_file
 export trkfile=$trkfile
+export tmpdir=$tmpdir
 "
 }
 
@@ -276,7 +284,7 @@ get_unique_tag_list() {
 compact_tags() {
     local trkfile_to_compact="$1"
     test -z "$trkfile_to_compact" && trkfile_to_compact="$trkfile"
-    local temp_trk_file="/tmp/`basename $trkfile_to_compact`-compacting"
+    local temp_trk_file="$tmpdir/`basename $trkfile_to_compact`-compacting"
 
     test -f $temp_trk_file && rm -f $temp_trk_file
     unique_tag_list=`get_unique_tag_list "$trkfile_to_compact"`
