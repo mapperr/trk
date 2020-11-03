@@ -1,0 +1,106 @@
+#! /bin/sh
+
+# taken from gradlew
+PRG="$0"
+while [ -h "$PRG" ] ; do
+    ls=`ls -ld "$PRG"`
+    link=`expr "$ls" : '.*-> \(.*\)$'`
+    if expr "$link" : '/.*' > /dev/null; then
+        PRG="$link"
+    else
+        PRG=`dirname "$PRG"`"/$link"
+    fi
+done
+SAVED="`pwd`"
+cd "`dirname \"$PRG\"`/" >/dev/null
+SCRIPTDIR="`pwd -P`"
+# =========================
+
+if test -z "$SHUNIT_SCRIPT"; then
+    echo "
+    to run those tests set the SHUNIT_SCRIPT
+    env var to the path of shunit2 script
+    
+    es: export SHUNIT_SCRIPT=\$HOME/shunit2/shunit2
+
+    see this link for more infos:
+    https://github.com/kward/shunit2"
+    exit 1
+fi
+
+trk="./trk"
+
+export TRK_DEBUG=1
+export TRK_DIR="/tmp/trkdir_test"
+test -z "$TMPDIR" || \
+    export TRK_DIR="$TMPDIR/trkdir_test"
+
+# import variables definitions
+eval `$trk env`
+
+cleanup() {
+    if test -d "$trkdir"; then
+       rm -rf "$trkdir"
+    fi
+}
+
+setUp() {
+    cleanup
+}
+
+test_start_a_timer() {
+    $trk test
+    assertTrue "test -f $trk_active_file"
+}
+
+test_stop_a_timer() {
+    $trk testing
+    sleep 1
+    $trk t
+    assertTrue 'trk active file is not empty after a stop' \
+        "test -z \"`head -n1 $trk_active_file`\""
+    assertEquals "testing 1s" "`cat $trkfile`"
+    $trk testing
+    sleep 2
+    $trk t
+    assertEquals "testing 3s" "`cat $trkfile`"
+}
+
+test_add_entry() {
+    $trk testing 1h
+    assertTrue "grep 'testing 1h' $trkfile >/dev/null"
+    $trk testing 1h
+    assertTrue "grep 'testing 2h' $trkfile >/dev/null"
+
+    $trk testing 2d
+    assertTrue "grep 'testing 2d2h' $trkfile >/dev/null"
+    $trk testing 30m
+    assertTrue "grep 'testing 2d2h30m' $trkfile >/dev/null"
+    $trk testing 30s
+    assertTrue "grep 'testing 2d2h30m' $trkfile >/dev/null"
+}
+
+test_report() {
+    $trk testing 1h
+    assertTrue "$trk | grep '1h spent on testing' >/dev/null"
+    assertFalse "$trk | grep 'active entry' >/dev/null"
+
+    today_month="`date '+%m'`"
+    nextday_month="`date -d '1 day' '+%m'`"
+    newtrkfile="$trkdir/`date -d '-1 day' '+%Y-%m-%d'`.log"
+    test "$today_month" = "$nextday_month" && \
+        newtrkfile="$trkdir/`date -d '1 day' '+%Y-%m-%d'`.log"
+    echo "testing 1h" >> "$newtrkfile"
+    echo "monthtesting 7h" >> "$newtrkfile"
+    assertTrue "$trk r month | grep '2h spent on testing' >/dev/null"
+    assertTrue "$trk r month | grep '7h spent on monthtesting' >/dev/null"
+    assertFalse "$trk | grep 'active entry' >/dev/null"
+
+    $trk activetesting
+    sleep 1
+    assertTrue "$trk | grep 'activetesting' >/dev/null"
+    assertTrue "$trk | grep 'active entry' >/dev/null"
+}
+
+
+. $SHUNIT_SCRIPT
