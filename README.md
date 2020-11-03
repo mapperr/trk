@@ -30,10 +30,10 @@ An unrefined cli time tracker.
     trk help | h
         shows help
 
-Options:
+    Options:
     --help -h   Print this help
 
-Notes:
+    Notes:
     - trk default dir is [$HOME/.trk]
     - to change default trk dir set TRK_DIR env var
     - trk default workday hours is 8
