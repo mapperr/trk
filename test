@@ -76,5 +76,20 @@ test_add_entry() {
     assertTrue "grep 'testing 2d2h30m' $trkfile >/dev/null"
 }
 
+test_report() {
+    $trk testing 1h
+    assertTrue "$trk | grep '1h spent on testing' >/dev/null"
+
+    today_month="`date '+%m'`"
+    nextday_month="`date -d '1 day' '+%m'`"
+    newtrkfile="$trkdir/`date -d '-1 day' '+%Y-%m-%d'`.log"
+    test "$today_month" = "$nextday_month" && \
+        newtrkfile="$trkdir/`date -d '1 day' '+%Y-%m-%d'`.log"
+    echo "testing 1h" >> "$newtrkfile"
+    echo "monthtesting 7h" >> "$newtrkfile"
+    assertTrue "$trk r month | grep '2h spent on testing' >/dev/null"
+    assertTrue "$trk r month | grep '7h spent on monthtesting' >/dev/null"
+}
+
 
 . $SHUNIT_SCRIPT

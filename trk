@@ -118,7 +118,7 @@ stop_timer() {
         log "start timestamp: [$start_ts]"
         now=`get_timestamp`
         seconds_spent=`expr $now - $start_ts`
-        humanized_time_spent=`get_humanized_interval "$seconds_spent"`
+        humanized_time_spent=`get_friendly_time_from_seconds "$seconds_spent"`
         echo "$tag $humanized_time_spent" >> "$trkfile"
         echo -n '' > "$trk_active_file"
     else
@@ -163,13 +163,7 @@ show_tags() {
         sort | uniq
 }
 
-is_the_current_active_timer_entry() {
-    local entry_start_timestamp="$1"
-    test `show_today_log | grep -A1 "$entry_start_timestamp" | wc -l` -eq 1
-    return $?
-}
-
-get_seconds_from_time_spent() {
+get_seconds_from_friendly_time() {
     local time_spent="$1"
 
     days=`echo "$time_spent" | grep -o '[0-9]*d' | tr -d 'd'`
@@ -194,7 +188,7 @@ get_seconds_from_time_spent() {
     echo -n "$secsspent"
 }
 
-get_humanized_interval() {
+get_friendly_time_from_seconds() {
     local seconds_spent="$1"
     
     log "converting [$seconds_spent] seconds to time spent"
@@ -252,35 +246,6 @@ add_entry() {
     compact_tags "$trkfile"
 }
 
-get_last_trk_line() {
-    test -r $trkfile && tail -n1 "$trkfile"
-}
-
-print_tag_info() {
-    local tag="$1"
-    local seconds_spent="$2"
-    echo "spent `get_humanized_interval "$seconds_spent"` on $tag"
-}
-
-show_today_report() {
-    local now=`get_timestamp`
-
-    echo "report (with active timer included):"
-    echo
-    total_seconds_spent=0
-    for tag in `show_today_tags`; do
-        tag_seconds_spent=0
-        for entry_start_time in `get_today_entry_start_timestamps "$tag"`; do
-            seconds_spent=`get_seconds_spent $entry_start_time $now`
-            tag_seconds_spent=`expr $tag_seconds_spent + $seconds_spent`
-        done
-        print_tag_info "$tag" "$tag_seconds_spent"
-        total_seconds_spent=`expr $total_seconds_spent + $tag_seconds_spent`
-    done
-    echo
-    echo "total time spent: [`get_humanized_interval "$total_seconds_spent"`]"
-}
-
 get_unique_tag_list() {
     local trkfile_to_compact="$1"
     test -z "$trkfile_to_compact" && trkfile_to_compact="$trkfile"
@@ -304,10 +269,10 @@ compact_tags() {
             log "found entry [$entry]"
             time_spent=`echo "$entry" | cut -d ' ' -f 2`
             log "time_spent [$time_spent]"
-            seconds_spent=`get_seconds_from_time_spent $time_spent`
+            seconds_spent=`get_seconds_from_friendly_time $time_spent`
             tag_total_seconds_spent=`expr $tag_total_seconds_spent + $seconds_spent`
         done < "$trkfile_to_compact"
-        humanized_time_spent=`get_humanized_interval "$tag_total_seconds_spent"`
+        humanized_time_spent=`get_friendly_time_from_seconds "$tag_total_seconds_spent"`
         echo "$tag $humanized_time_spent" >> "$temp_trk_file"
     done
     mv -f "$temp_trk_file" "$trkfile_to_compact"
@@ -328,7 +293,7 @@ show_current_entry() {
     log "tag: [$tag]"
 
     local seconds_spent=`get_seconds_spent "$entry_start_time" "$now"`
-    local humanized_time_spent=`get_humanized_interval "$seconds_spent"`
+    local humanized_time_spent=`get_friendly_time_from_seconds "$seconds_spent"`
 
     echo "active timer:"
     echo "$humanized_time_spent spent on $tag"
@@ -337,22 +302,41 @@ show_current_entry() {
 show_report() {
     local from="$1"
     local to="$2"
-    local now=`get_timestamp`
+    local reportfile="$tmpdir/trkreportfile"
 
-    echo "report from [$from] to [$to]:"
-    echo
+    if [ "$from" = "today" ]; then
+        _show_report "$trkfile"
+    elif [ "$from" = "month" ]; then
+        pattern="`date '+%Y-%m-*'`.log"
+        cat $trkdir/$pattern >$reportfile
+        compact_tags "$reportfile"
+        _show_report "$reportfile"
+        test -f "$reportfile" && rm -f "$reportfile"
+    fi
+}
+
+_show_report() {
+    local trkfile_to_report="$1"
+
     total_seconds_spent=0
-    for tag in `show_tags`; do
-        tag_seconds_spent=0
-        for entry_start_time in `get_entry_start_timestamps "$tag"`; do
-            seconds_spent=`get_seconds_spent $entry_start_time $now`
-            tag_seconds_spent=`expr $tag_seconds_spent + $seconds_spent`
-        done
-        print_tag_info "$tag" "$tag_seconds_spent"
-        total_seconds_spent=`expr $total_seconds_spent + $tag_seconds_spent`
-    done
     echo
-    echo "total time spent: [`get_humanized_interval "$total_seconds_spent"`]"
+    while read entry; do
+        log "found entry [$entry]"
+        tag=`echo "$entry" | cut -d ' ' -f 1`
+        time_spent=`echo "$entry" | cut -d ' ' -f 2`
+        log "time_spent [$time_spent]"
+        seconds_spent=`get_seconds_from_friendly_time $time_spent`
+        total_seconds_spent=`expr $total_seconds_spent + $seconds_spent`
+        print_tag_info "$tag" "$time_spent"
+    done < "$trkfile_to_report"
+    echo
+    echo "total time spent: [`get_friendly_time_from_seconds "$total_seconds_spent"`]"
+}
+
+print_tag_info() {
+    local tag="$1"
+    local time_spent="$2"
+    echo "$time_spent spent on $tag"
 }
 
 clean_trk() {
@@ -364,7 +348,7 @@ ensure_trkdir_is_present
 command="$1"
 
 if [ -z "$command" ]; then
-    show_today_report
+    show_report 'today'
     echo
     show_current_entry
     echo
