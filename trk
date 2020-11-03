@@ -44,6 +44,7 @@ Usage:
         e.g.: "1h", "1h20m", "2d", etc.
     trk t
         terminates the current timer
+    trk r today | month
     trk r [from] [to]
         shows a report of the time range specified
         format of the time range is $trkfile_date_format
@@ -51,8 +52,6 @@ Usage:
         lists the trk files
     trk e [trk_file]
         edit the trk file directly, only for the brave
-    trk clean
-        backup the current trk file and starts anew
     trk y
         sync: commits eventual changes and do a pull/push of the trk dir
     trk g git_args
@@ -133,34 +132,6 @@ start_timer() {
     ensure_trkfile_is_present
     is_there_a_pending_timer && stop_timer
     echo "$tag $now" >> "$trk_active_file"
-}
-
-show_filtered_log() {
-    local filter="$1"
-    grep -A1 "$filter" "$trkfile"
-}
-
-show_today_log() {
-    test -r "$trkfile" && cat "$trkfile"
-}
-
-show_full_log() {
-    if [ 0 -eq `ls "$trkdir" | wc -l` ]; then
-        return
-    fi
-    cat $trkdir/*.log
-}
-
-show_today_tags() {
-    show_today_log | \
-        grep '^[a-zA-Z0-9_\-\.]*' | \
-        sort | uniq
-}
-
-show_tags() {
-    show_full_log | \
-        grep '^[a-zA-Z0-9_\-\.]*' | \
-        sort | uniq
 }
 
 get_seconds_from_friendly_time() {
@@ -279,24 +250,21 @@ compact_tags() {
     test -f "$temp_trk_file" && rm -f "$temp_trk_file"
 }
 
-show_current_entry() {
+get_active_entry() {
     if ! is_there_a_pending_timer; then
-        echo 'no active timer'
         return
     fi
     local now=`get_timestamp`
-    local current_entry_line=`get_last_trk_line`
-    local entry_start_time=`extract_timestamp_from_start_entry "$current_entry_line"`
-    local tag=`extract_tag_from_start_entry "$current_entry_line"`
+    local tag=`cat "$trk_active_file" | cut -d ' ' -f 1`
+    local entry_start_time=`cat "$trk_active_file" | cut -d ' ' -f 2`
 
     log "entry_start_time: [$entry_start_time]"
     log "tag: [$tag]"
 
-    local seconds_spent=`get_seconds_spent "$entry_start_time" "$now"`
-    local humanized_time_spent=`get_friendly_time_from_seconds "$seconds_spent"`
+    local seconds_spent=`expr $now - $entry_start_time`
+    local friendly_time=`get_friendly_time_from_seconds "$seconds_spent"`
 
-    echo "active timer:"
-    echo "$humanized_time_spent spent on $tag"
+    echo -n "$tag $friendly_time"
 }
 
 show_report() {
@@ -313,6 +281,12 @@ show_report() {
         _show_report "$reportfile"
         test -f "$reportfile" && rm -f "$reportfile"
     fi
+
+    active_entry=`get_active_entry`
+    if test ! -z "$active_entry"; then
+        echo
+        print_active_entry_info $active_entry
+    fi
 }
 
 _show_report() {
@@ -327,20 +301,23 @@ _show_report() {
         log "time_spent [$time_spent]"
         seconds_spent=`get_seconds_from_friendly_time $time_spent`
         total_seconds_spent=`expr $total_seconds_spent + $seconds_spent`
-        print_tag_info "$tag" "$time_spent"
+        print_entry_info "$tag" "$time_spent"
     done < "$trkfile_to_report"
     echo
-    echo "total time spent: [`get_friendly_time_from_seconds "$total_seconds_spent"`]"
+    tot_friendly_time="`get_friendly_time_from_seconds "$total_seconds_spent"`"
+    echo "[$tot_friendly_time] spent in total"
 }
 
-print_tag_info() {
+print_entry_info() {
     local tag="$1"
-    local time_spent="$2"
-    echo "$time_spent spent on $tag"
+    local time="$2"
+    echo "$time spent on $tag"
 }
 
-clean_trk() {
-    mv "$trkfile" "$trkfile.bak"
+print_active_entry_info() {
+    local tag="$1"
+    local time="$2"
+    echo "$time spent working on $tag (active entry)"
 }
 
 ensure_trkdir_is_present
@@ -350,12 +327,9 @@ command="$1"
 if [ -z "$command" ]; then
     show_report 'today'
     echo
-    show_current_entry
-    echo
     echo "run [`basename $0` h] for help"
 
-elif [ "$command" = "s" ] \
-    || [ "$command" = "t" ]; then
+elif [ "$command" = "t" ]; then
     stop_timer
 
 elif [ "$command" = "l" ]; then
@@ -382,9 +356,6 @@ elif [ "$command" = "g" ]; then
     shift 1
     cd $trkdir
     git $@
-
-elif [ "$command" = "clean" ]; then
-    clean_trk
 
 elif [ "$command" = "env" ]; then
     print_env
