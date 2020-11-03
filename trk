@@ -120,6 +120,7 @@ stop_timer() {
         humanized_time_spent=`get_friendly_time_from_seconds "$seconds_spent"`
         echo "$tag $humanized_time_spent" >> "$trkfile"
         echo -n '' > "$trk_active_file"
+        compact_tags "$trkfile"
     else
         echo "no active timer to stop" 
     fi
@@ -331,6 +332,7 @@ if [ -z "$command" ]; then
 
 elif [ "$command" = "t" ]; then
     stop_timer
+    show_report 'today'
 
 elif [ "$command" = "l" ]; then
     cd $trkdir
