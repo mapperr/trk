@@ -6,7 +6,7 @@ An unrefined cli time tracker.
 ## Usage
 
     trk
-        shows a "today" report and the current timer, if active
+        shows a "today" report
     trk <entry_name>
         starts timer tracking a named entry
     trk <entry_name> <time_spent>
@@ -15,9 +15,7 @@ An unrefined cli time tracker.
     trk t
         terminates the current timer
     trk r today | month
-    trk r [from] [to]
         shows a report of the time range specified
-        format of the time range is %Y-%m-%d
     trk l
         lists the trk files
     trk e [trk_file]
