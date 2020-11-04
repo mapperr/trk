@@ -5,14 +5,17 @@ An unrefined cli time tracker.
 
 ## Usage
 
+
     Usage:
         trk
             shows a 'today' report
         trk <entry_name>
-            starts timer tracking a named entry
-        trk <entry_name> <time_spent>
+            starts a timer tracking a named entry
+        trk <time_spent> <entry_name>
             adds a new entry manually, with the specified time spent
-            e.g.: '1h', '1h20m', '2d', etc.
+            e.g.: '40m', '2h', '1h20m', etc., with 'h' and 'm' being
+            [h]ours and [m]inutes
+            (you can even use [d]ays and [s]econds, but why should you? :)
         trk t
             terminates the current timer
         trk r
@@ -22,7 +25,7 @@ An unrefined cli time tracker.
         trk l
             lists the trk files
         trk e [trk_file]
-            edit the trk file directly, only for the brave
+            edit the trk file directly, defaulting to today trkfile
         trk y
             sync: commits eventual changes and do a pull/push of the trk dir
         trk g git_args
@@ -44,12 +47,13 @@ An unrefined cli time tracker.
         - to show debug infos set TRK_DEBUG env var to something
 
 
-It's main use is to track the time spent on things in the current day.
 
-### Improvements
+It's main use is to track the time spent on things at work  
+and help with the annoying task of reporting/budgeting spent hours.
 
-- ✓ make entries time interval human-editable
-- implement simple reports with a user-specified time interval
-    (and a few custom ones, like 'week', 'month', 'lastweek', etc)
-- make possible to add a description to an entry
+## Tests
 
+You can fire test with a trivial SHUNIT2 setup  
+(just clone it and set an env var).
+
+Check out the `test` script!
