@@ -57,3 +57,10 @@ You can fire test with a trivial SHUNIT2 setup
 (just clone it and set an env var).
 
 Check out the `test` script!
+
+## Contribute
+
+User the sr.ht tracking at https://todo.sr.ht/~mapperr/trk  
+and the mailing list at https://lists.sr.ht/~mapperr/public-inbox
+
+Thanks!
