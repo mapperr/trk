@@ -53,7 +53,8 @@ and help with the annoying task of reporting/budgeting spent hours.
 
 ## Tests
 
-You can fire test with a trivial SHUNIT2 setup  
+You can fire test with a trivial 
+[SHUNIT2](https://github.com/kward/shunit2/) setup  
 (just clone it and set an env var).
 
 Check out the [test](https://git.sr.ht/~mapperr/trk/tree/master/test) script!
