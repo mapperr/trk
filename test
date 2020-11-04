@@ -67,21 +67,24 @@ test_stop_a_timer() {
 }
 
 test_add_entry() {
-    $trk testing 1h
+    $trk 1h testing
     assertTrue "grep 'testing 1h' $trkfile >/dev/null"
-    $trk testing 1h
+    $trk 1h testing
     assertTrue "grep 'testing 2h' $trkfile >/dev/null"
 
-    $trk testing 2d
+    $trk 2d testing
     assertTrue "grep 'testing 2d2h' $trkfile >/dev/null"
-    $trk testing 30m
+    $trk 30m testing
     assertTrue "grep 'testing 2d2h30m' $trkfile >/dev/null"
-    $trk testing 30s
+    # seconds under the minute are worthless xD
+    $trk 30s testing
     assertTrue "grep 'testing 2d2h30m' $trkfile >/dev/null"
+    $trk 120s testing
+    assertTrue "grep 'testing 2d2h32m' $trkfile >/dev/null"
 }
 
 test_report() {
-    $trk testing 1h
+    $trk 1h testing
     assertTrue "$trk | grep '1h spent on testing' >/dev/null"
     assertFalse "$trk | grep 'active entry' >/dev/null"
 

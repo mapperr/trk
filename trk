@@ -38,8 +38,8 @@ Usage:
     trk
         shows a 'today' report
     trk <entry_name>
-        starts timer tracking a named entry
-    trk <entry_name> <time_spent>
+        starts a timer tracking a named entry
+    trk <time_spent> <entry_name>
         adds a new entry manually, with the specified time spent
         e.g.: '1h', '1h20m', '2d', etc.
     trk t
@@ -374,10 +374,11 @@ elif [ "$command" = "--help" ] \
     echo "$help"
 else
     tag="$command"
-    time_spent="$2"
-    if test -z "$time_spent"; then
+    if test -z "$2"; then
         start_timer "$tag"
     else
+        time_spent="$command"
+        tag="$2"
         add_entry "$tag" "$time_spent"
     fi
 fi
