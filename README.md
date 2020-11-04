@@ -56,7 +56,7 @@ and help with the annoying task of reporting/budgeting spent hours.
 You can fire test with a trivial SHUNIT2 setup  
 (just clone it and set an env var).
 
-Check out the `test` script!
+Check out the [test](https://git.sr.ht/~mapperr/trk/tree/master/test) script!
 
 ## Contribute
 
