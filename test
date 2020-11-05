@@ -59,11 +59,11 @@ test_stop_a_timer() {
     $trk t
     assertTrue 'trk active file is not empty after a stop' \
         "test -z \"`head -n1 $trk_active_file`\""
-    assertEquals "testing 1s" "`cat $trkfile`"
+    assertTrue "cat $trkfile | grep '[12]s'"
     $trk testing
     sleep 2
     $trk t
-    assertEquals "testing 3s" "`cat $trkfile`"
+    assertTrue "cat $trkfile | grep '[34]s'"
 }
 
 test_add_entry() {
