@@ -107,7 +107,9 @@ test_report() {
 
 test_trkfile_creation() {
     $trk testing
-    assertFalse "trkfile is created empty!" "test -f $trkfile"
+    assertFalse "trkfile is created empty on start timer!" "test -f $trkfile"
+    $trk
+    assertFalse "trkfile is created empty on today report!" "test -f $trkfile"
 }
 
 . $SHUNIT_SCRIPT

@@ -276,9 +276,12 @@ show_report() {
 
     echo
     if [ "$from" = "today" ]; then
+        if test -f "$trkfile"; then
         echo 'today report:'
-        ensure_trkfile_is_present
         _show_report "$trkfile"
+        else
+            echo "No records for today"
+        fi
     elif [ "$from" = "month" ]; then
         echo 'monthly report:'
         pattern="`date '+%Y-%m-*'`.log"
