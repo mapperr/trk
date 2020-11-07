@@ -132,7 +132,6 @@ start_timer() {
     local tag="$1"
     local now=`get_timestamp`
 
-    ensure_trkfile_is_present
     is_there_a_pending_timer && stop_timer
     echo "$tag $now" >> "$trk_active_file"
 }

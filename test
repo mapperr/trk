@@ -105,5 +105,9 @@ test_report() {
     assertTrue "$trk | grep 'active entry' >/dev/null"
 }
 
+test_trkfile_creation() {
+    $trk testing
+    assertFalse "trkfile is created empty!" "test -f $trkfile"
+}
 
 . $SHUNIT_SCRIPT
