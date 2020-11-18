@@ -149,6 +149,11 @@ test_git_initial_handling() {
     logt "using autosync from now on"
     $trk 1h testing
     $trk y
+
+    logt "handling a new file"
+    tomorrow_trkfile="$trkdir/`date -d '1 day' +"$trkfile_date_format"`.log"
+    echo '1h test' > $tomorrow_trkfile
+    $trk y
 }
 
 . $SHUNIT_SCRIPT

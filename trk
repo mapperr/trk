@@ -30,6 +30,7 @@ export trkdir=$trkdir
 export trk_active_file=$trk_active_file
 export trkfile=$trkfile
 export tmpdir=$tmpdir
+export trkfile_date_format=$trkfile_date_format
 "
 }
 
