@@ -38,9 +38,20 @@ test -z "$TMPDIR" || \
 # import variables definitions
 eval `$trk env`
 
+export trk_bare_git_test_repo_dir="$trkdir-bare_git_repo"
+
+logt() {
+    local msg="$1"
+    echo "TEST - $msg" >&2
+}
+
 cleanup() {
     if test -d "$trkdir"; then
        rm -rf "$trkdir"
+    fi
+
+    if test -d "$trk_bare_git_test_repo_dir"; then
+       rm -rf "$trk_bare_git_test_repo_dir"
     fi
 }
 
@@ -110,6 +121,34 @@ test_trkfile_creation() {
     assertFalse "trkfile is created empty on start timer!" "test -f $trkfile"
     $trk
     assertFalse "trkfile is created empty on today report!" "test -f $trkfile"
+}
+
+test_git_initial_handling() {
+    hash git >/dev/null || return 1
+    mkdir $trkdir
+    mkdir $trk_bare_git_test_repo_dir
+
+    logt "setup a bare repo"
+    cd $trk_bare_git_test_repo_dir
+    local test_repo_name="trktesting.git"
+    git init --bare $test_repo_name
+    cd -
+
+    logt "init user trkfiles repo"
+    cd $trkdir
+    git init
+    git remote add origin "$trk_bare_git_test_repo_dir/$test_repo_name"
+    cd -
+
+    logt "doing the first push"
+    $trk 1h testing
+    $trk g add -A
+    $trk g commit -m 'Init'
+    $trk g push -u origin master
+
+    logt "using autosync from now on"
+    $trk 1h testing
+    $trk y
 }
 
 . $SHUNIT_SCRIPT
