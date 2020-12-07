@@ -60,6 +60,7 @@ setUp() {
 }
 
 test_time_entry_regex_validation() {
+    logt TIME_STRING_VALIDATION
     $trk 1t testing
     assertFalse "[ $? -eq 0 ]"
     $trk f testing
@@ -82,11 +83,13 @@ test_time_entry_regex_validation() {
 }
 
 test_start_a_timer() {
+    logt START_TIMER
     $trk test
     assertTrue "test -f $trk_active_file"
 }
 
 test_stop_a_timer() {
+    logt STOP_TIMER
     $trk testing
     sleep 1
     $trk t
@@ -100,23 +103,18 @@ test_stop_a_timer() {
 }
 
 test_add_entry() {
+    logt ADD_ENTRY
     $trk 1h testing
     assertTrue "grep 'testing 1h' $trkfile >/dev/null"
     $trk 1h testing
     assertTrue "grep 'testing 2h' $trkfile >/dev/null"
 
-    $trk 2d testing
-    assertTrue "grep 'testing 2d2h' $trkfile >/dev/null"
     $trk 30m testing
-    assertTrue "grep 'testing 2d2h30m' $trkfile >/dev/null"
-    # seconds under the minute are worthless xD
-    $trk 30s testing
-    assertTrue "grep 'testing 2d2h30m' $trkfile >/dev/null"
-    $trk 120s testing
-    assertTrue "grep 'testing 2d2h32m' $trkfile >/dev/null"
+    assertTrue "grep 'testing 2h30m' $trkfile >/dev/null"
 }
 
 test_report() {
+    logt REPORTS
     $trk 1h testing
     assertTrue "$trk | grep '1h spent on testing' >/dev/null"
     assertFalse "$trk | grep 'active entry' >/dev/null"
