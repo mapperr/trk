@@ -19,9 +19,12 @@ An unrefined cli time tracker.
         trk t
             terminates the current timer
         trk r
-        trk r today | month
-            shows the monthly report
-            or a report of the time range specified
+        trk r today | week | month
+            shows the current month report
+            or a report of the time range specified:
+            today, current week (starting from monday), current month
+        trk w
+            shortcut to 'trk r week'
         trk l
             lists the trk files
         trk e [trk_file]

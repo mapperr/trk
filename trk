@@ -50,9 +50,12 @@ Usage:
     trk t
         terminates the current timer
     trk r
-    trk r today | month
-        shows the monthly report
-        or a report of the time range specified
+    trk r today | week | month
+        shows the current month report
+        or a report of the time range specified:
+        today, current week (starting from monday), current month
+    trk w
+        shortcut to 'trk r week'
     trk l
         lists the trk files
     trk e [trk_file]
@@ -292,6 +295,8 @@ show_report() {
     local to="$2"
     local reportfile="$tmpdir/trkreportfile"
 
+    test -f "$reportfile" && rm -f "$reportfile"
+
     echo
     if [ "$from" = "today" ]; then
         if test -f "$trkfile"; then
@@ -300,6 +305,7 @@ show_report() {
         else
             echo "No records for today"
         fi
+
     elif [ "$from" = "month" ]; then
         echo 'monthly report:'
         pattern="`date '+%Y-%m-*'`.log"
@@ -307,6 +313,29 @@ show_report() {
         compact_tags "$reportfile"
         _show_report "$reportfile"
         test -f "$reportfile" && rm -f "$reportfile"
+
+    elif [ "$from" = "week" ]; then
+        echo 'weekly report:'
+        today_weekday_number=`date +'%u'`
+        # monday is 1 as documented in man date
+        if test $today_weekday_number -eq 1; then
+            _show_report "$trkfile"
+        else
+            last_monday_timestamp=`date -d 'last monday' +'%s'`
+            secs_in_a_day=`expr 3600 \* 24`
+            counter=7
+            secs=$last_monday_timestamp
+            while test $counter -ne 0; do
+                file_date=`date -d "@$secs" +"$trkfile_date_format"`
+                file="$file_date.log"
+                test -r "$trkdir/$file" && cat $trkdir/$file >>$reportfile
+                counter=`expr $counter - 1`
+                secs=`expr $secs + $secs_in_a_day`
+            done
+            compact_tags "$reportfile"
+            _show_report "$reportfile"
+            test -f "$reportfile" && rm -f "$reportfile"
+        fi
     fi
 
     active_entry=`get_active_entry`
@@ -374,6 +403,9 @@ elif [ "$command" = "r" ]; then
     to="$3"
     test -z "$from" && from="month"
     show_report $from $to
+
+elif [ "$command" = "w" ]; then
+    show_report 'week'
 
 elif [ "$command" = "y" ]; then
     cd $trkdir
