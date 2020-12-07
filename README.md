@@ -25,6 +25,9 @@ An unrefined cli time tracker.
             today, current week (starting from monday), current month
         trk w
             shortcut to 'trk r week'
+        trk R
+        trk W
+            same as above, but also reports each day of the time range
         trk l
             lists the trk files
         trk e [trk_file]

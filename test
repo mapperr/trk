@@ -84,8 +84,9 @@ test_time_entry_regex_validation() {
 
 test_start_a_timer() {
     logt START_TIMER
-    $trk test
+    $trk testing
     assertTrue "test -f $trk_active_file"
+    assertTrue "cat $trk_active_file | grep testing"
 }
 
 test_stop_a_timer() {

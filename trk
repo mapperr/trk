@@ -56,6 +56,9 @@ Usage:
         today, current week (starting from monday), current month
     trk w
         shortcut to 'trk r week'
+    trk R
+    trk W
+        same as above, but also reports each day of the time range
     trk l
         lists the trk files
     trk e [trk_file]
@@ -293,6 +296,7 @@ get_active_entry() {
 show_report() {
     local from="$1"
     local to="$2"
+    local verbose="$3"
     local reportfile="$tmpdir/trkreportfile"
 
     test -f "$reportfile" && rm -f "$reportfile"
@@ -309,6 +313,15 @@ show_report() {
     elif [ "$from" = "month" ]; then
         echo 'monthly report:'
         pattern="`date '+%Y-%m-*'`.log"
+        if test ! -z "$verbose"; then
+            for f in `ls -1 $trkdir/$pattern`; do
+                echo
+                echo "`basename $f | sed 's/\.log$//'`:"
+                _show_report $f
+            done
+        fi
+        echo
+        echo '>> total month report:'
         cat $trkdir/$pattern >$reportfile
         compact_tags "$reportfile"
         _show_report "$reportfile"
@@ -329,9 +342,17 @@ show_report() {
                 file_date=`date -d "@$secs" +"$trkfile_date_format"`
                 file="$file_date.log"
                 test -r "$trkdir/$file" && cat $trkdir/$file >>$reportfile
+                if test ! -z "$verbose"; then
+                    echo
+                    echo "$file_date:"
+                    test -r "$trkdir/$file" && _show_report "$trkdir/$file"
+                    test -r "$trkdir/$file" || echo 'no tracking'
+                fi
                 counter=`expr $counter - 1`
                 secs=`expr $secs + $secs_in_a_day`
             done
+            echo
+            echo '>> total week report:'
             compact_tags "$reportfile"
             _show_report "$reportfile"
             test -f "$reportfile" && rm -f "$reportfile"
@@ -406,6 +427,15 @@ elif [ "$command" = "r" ]; then
 
 elif [ "$command" = "w" ]; then
     show_report 'week'
+
+elif [ "$command" = "R" ]; then
+    from="$2"
+    to="$3"
+    test -z "$from" && from="month"
+    show_report "$from" "$to" "verbose"
+
+elif [ "$command" = "W" ]; then
+    show_report 'week' '' 'verbose'
 
 elif [ "$command" = "y" ]; then
     cd $trkdir
