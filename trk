@@ -23,14 +23,16 @@ if [ ! -z "$TMPDIR" ]; then
 fi
 
 tag_valid_regex='[0-9A-Za-z_-]*'
+time_entry_valid_regex_hours='[0-9]\{1,\}h'
+time_entry_valid_regex_minutes='[0-9]\{1,\}m'
 
 print_env() {
 echo "
-export trkdir=$trkdir
-export trk_active_file=$trk_active_file
-export trkfile=$trkfile
-export tmpdir=$tmpdir
-export trkfile_date_format=$trkfile_date_format
+export trkdir='$trkdir'
+export trk_active_file='$trk_active_file'
+export trkfile='$trkfile'
+export tmpdir='$tmpdir'
+export trkfile_date_format='$trkfile_date_format'
 "
 }
 
@@ -137,6 +139,16 @@ start_timer() {
     echo "$tag $now" >> "$trk_active_file"
 }
 
+validate_time_string() {
+    local time_string="$1"
+    local is_valid=1
+    if echo "$time_string" | grep -o "$time_entry_valid_regex_hours" >/dev/null \
+        || echo "$time_string" | grep -o "$time_entry_valid_regex_minutes" >/dev/null; then
+        is_valid=0
+    fi
+    return $is_valid
+}
+
 get_seconds_from_friendly_time() {
     local time_spent="$1"
 
@@ -213,6 +225,10 @@ add_entry() {
         echo "missing time spent"
         exit 1
     fi
+    if ! validate_time_string "$time_spent"; then
+        echo "invalid time string"
+        exit 1
+    fi
 
     entry="$tag $time_spent"
     log "adding entry [$entry]"
@@ -251,6 +267,7 @@ compact_tags() {
     done
     mv -f "$temp_trk_file" "$trkfile_to_compact"
     test -f "$temp_trk_file" && rm -f "$temp_trk_file"
+    return 0
 }
 
 get_active_entry() {

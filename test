@@ -59,6 +59,28 @@ setUp() {
     cleanup
 }
 
+test_time_entry_regex_validation() {
+    $trk 1t testing
+    assertFalse "[ $? -eq 0 ]"
+    $trk f testing
+    assertFalse "[ $? -eq 0 ]"
+    $trk 1 testing
+    assertFalse "[ $? -eq 0 ]"
+    $trk 10 testing
+    assertFalse "[ $? -eq 0 ]"
+
+    $trk 100m testing
+    assertTrue "[ $? -eq 0 ]"
+    $trk 199h testing
+    assertTrue "[ $? -eq 0 ]"
+    $trk 1h testing
+    assertTrue "[ $? -eq 0 ]"
+    $trk 10h testing
+    assertTrue "[ $? -eq 0 ]"
+    $trk 20m testing
+    assertTrue "[ $? -eq 0 ]"
+}
+
 test_start_a_timer() {
     $trk test
     assertTrue "test -f $trk_active_file"
