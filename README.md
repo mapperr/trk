@@ -5,7 +5,6 @@ An unrefined cli time tracker.
 
 ## Usage
 
-
     Usage:
         trk
             shows a 'today' report
@@ -18,16 +17,23 @@ An unrefined cli time tracker.
             (you can even use [d]ays and [s]econds, but why should you? :)
         trk t
             terminates the current timer
+
         trk r
-        trk r today | week | month
+        trk r today | week | month | lastweek | lastmonth
             shows the current month report
             or a report of the time range specified:
-            today, current week (starting from monday), current month
-        trk w
-            shortcut to 'trk r week'
-        trk R
-        trk W
+            today, current week (starting from monday), current month, etc.
+        trk m | mm
+            shortcut to 'trk r month' or 'trk r lastmonth'
+        trk w | ww
+            shortcut to 'trk r week' or 'trk r lastweek'
+        trk M | MM
+        trk W | WW
             same as above, but also reports each day of the time range
+        trk s <query>
+            greps through all trkfiles and report the results
+            useful if you want to know the total time spent on an entry
+
         trk l
             lists the trk files
         trk e [trk_file]

@@ -49,16 +49,23 @@ Usage:
         (you can even use [d]ays and [s]econds, but why should you? :)
     trk t
         terminates the current timer
+
     trk r
-    trk r today | week | month
+    trk r today | week | month | lastweek | lastmonth
         shows the current month report
         or a report of the time range specified:
-        today, current week (starting from monday), current month
-    trk w
-        shortcut to 'trk r week'
-    trk R
-    trk W
+        today, current week (starting from monday), current month, etc.
+    trk m | mm
+        shortcut to 'trk r month' or 'trk r lastmonth'
+    trk w | ww
+        shortcut to 'trk r week' or 'trk r lastweek'
+    trk M | MM
+    trk W | WW
         same as above, but also reports each day of the time range
+    trk s <query>
+        greps through all trkfiles and report the results
+        useful if you want to know the total time spent on an entry
+
     trk l
         lists the trk files
     trk e [trk_file]
@@ -293,12 +300,25 @@ get_active_entry() {
     echo -n "$tag $friendly_time"
 }
 
+show_query_report() {
+    local query="$1"
+    
+    test -z "$query" && return
+
+    local reportfile="$tmpdir/trkreportfile"
+    cat $trkdir/*.log >$reportfile.all
+    grep "$query" "$reportfile.all" > $reportfile
+    compact_tags "$reportfile"
+    _show_report "$reportfile"
+    test -f "$reportfile" && rm -f "$reportfile"
+}
+
 show_report() {
     local from="$1"
     local to="$2"
     local verbose="$3"
-    local reportfile="$tmpdir/trkreportfile"
 
+    local reportfile="$tmpdir/trkreportfile"
     test -f "$reportfile" && rm -f "$reportfile"
 
     echo
@@ -313,19 +333,12 @@ show_report() {
     elif [ "$from" = "month" ]; then
         echo 'monthly report:'
         pattern="`date '+%Y-%m-*'`.log"
-        if test ! -z "$verbose"; then
-            for f in `ls -1 $trkdir/$pattern`; do
-                echo
-                echo "`basename $f | sed 's/\.log$//'`:"
-                _show_report $f
-            done
-        fi
-        echo
-        echo '>> total month report:'
-        cat $trkdir/$pattern >$reportfile
-        compact_tags "$reportfile"
-        _show_report "$reportfile"
-        test -f "$reportfile" && rm -f "$reportfile"
+        _show_report_from_file_pattern "$pattern" "$verbose"
+
+    elif [ "$from" = "lastmonth" ]; then
+        echo 'last month report:'
+        local pattern="`_get_last_month_date_pattern`.log"
+        _show_report_from_file_pattern "$pattern" "$verbose"
 
     elif [ "$from" = "week" ]; then
         echo 'weekly report:'
@@ -335,28 +348,17 @@ show_report() {
             _show_report "$trkfile"
         else
             last_monday_timestamp=`date -d 'last monday' +'%s'`
-            secs_in_a_day=`expr 3600 \* 24`
-            counter=7
-            secs=$last_monday_timestamp
-            while test $counter -ne 0; do
-                file_date=`date -d "@$secs" +"$trkfile_date_format"`
-                file="$file_date.log"
-                test -r "$trkdir/$file" && cat $trkdir/$file >>$reportfile
-                if test ! -z "$verbose"; then
-                    echo
-                    echo "$file_date:"
-                    test -r "$trkdir/$file" && _show_report "$trkdir/$file"
-                    test -r "$trkdir/$file" || echo 'no tracking'
-                fi
-                counter=`expr $counter - 1`
-                secs=`expr $secs + $secs_in_a_day`
-            done
-            echo
-            echo '>> total week report:'
-            compact_tags "$reportfile"
-            _show_report "$reportfile"
-            test -f "$reportfile" && rm -f "$reportfile"
+            _show_report_from_timestamp_and_offset \
+                $last_monday_timestamp 7 "$verbose"
         fi
+    elif [ "$from" = "lastweek" ]; then
+        echo 'lastweek report:'
+        local last_monday_timestamp=`date -d 'last monday' +'%s'`
+        local secs_in_a_day=`expr 3600 \* 24`
+        local secs_in_a_week=`expr $secs_in_a_day \* 7`
+        local start_timestamp=`expr $last_monday_timestamp - $secs_in_a_week`
+        _show_report_from_timestamp_and_offset \
+            $start_timestamp 7 "$verbose"
     fi
 
     active_entry=`get_active_entry`
@@ -364,6 +366,56 @@ show_report() {
         echo
         print_active_entry_info $active_entry
     fi
+}
+
+_show_report_from_file_pattern() {
+    local pattern="$1"
+    local verbose="$2"
+
+    if test ! -z "$verbose"; then
+        for f in `ls -1 $trkdir/$pattern`; do
+            echo
+            echo "`basename $f | sed 's/\.log$//'`:"
+            _show_report $f
+        done
+    fi
+    echo
+    echo '>> totals:'
+    cat $trkdir/$pattern >$reportfile
+    compact_tags "$reportfile"
+    _show_report "$reportfile"
+    test -f "$reportfile" && rm -f "$reportfile"
+}
+
+_show_report_from_timestamp_and_offset() {
+    local start_timestamp="$1"
+    local offset_in_days="$2"
+    local verbose="$3"
+
+    local reportfile="$tmpdir/trkreportfile"
+
+    local secs_in_a_day=`expr 3600 \* 24`
+    local counter=$offset_in_days
+    local secs=$start_timestamp
+
+    while test $counter -ne 0; do
+        file_date=`date -d "@$secs" +"$trkfile_date_format"`
+        file="$file_date.log"
+        test -r "$trkdir/$file" && cat $trkdir/$file >>$reportfile
+        if test ! -z "$verbose"; then
+            echo
+            echo "$file_date:"
+            test -r "$trkdir/$file" && _show_report "$trkdir/$file"
+            test -r "$trkdir/$file" || echo 'no tracking'
+        fi
+        counter=`expr $counter - 1`
+        secs=`expr $secs + $secs_in_a_day`
+    done
+    echo
+    echo '>> totals:'
+    compact_tags "$reportfile"
+    _show_report "$reportfile"
+    test -f "$reportfile" && rm -f "$reportfile"
 }
 
 _show_report() {
@@ -383,6 +435,24 @@ _show_report() {
     echo
     tot_friendly_time="`get_friendly_time_from_seconds "$total_seconds_spent"`"
     echo "[$tot_friendly_time] spent in total"
+}
+
+_get_last_month_date_pattern() {
+    local current_month=`date '+%m'`
+    local current_year=`date '+%Y'`
+
+    if [ $current_month -eq "01" ]; then
+        last_year=`expr $current_year - 1`
+        echo -n "$last_year-12-*"
+        return
+    fi
+
+    local last_month=`expr $current_month - 1`
+    if [ $last_month -lt 10 ]; then
+        echo -n "$current_year-0$last_month-*"
+    else
+        echo -n "$current_year-$last_month-*"
+    fi
 }
 
 print_entry_info() {
@@ -419,14 +489,15 @@ elif [ "$command" = "e" ]; then
     file_name="$2"
     edit_trkfile $file_name
 
+elif [ "$command" = "s" ]; then
+    query="$2"
+    show_query_report "$query"
+
 elif [ "$command" = "r" ]; then
     from="$2"
     to="$3"
     test -z "$from" && from="month"
     show_report $from $to
-
-elif [ "$command" = "w" ]; then
-    show_report 'week'
 
 elif [ "$command" = "R" ]; then
     from="$2"
@@ -434,8 +505,29 @@ elif [ "$command" = "R" ]; then
     test -z "$from" && from="month"
     show_report "$from" "$to" "verbose"
 
+elif [ "$command" = "m" ]; then
+    show_report 'month'
+
+elif [ "$command" = "mm" ]; then
+    show_report 'lastmonth'
+
+elif [ "$command" = "M" ]; then
+    show_report 'month' '' 'verbose'
+
+elif [ "$command" = "MM" ]; then
+    show_report 'lastmonth' '' 'verbose'
+
+elif [ "$command" = "w" ]; then
+    show_report 'week'
+
+elif [ "$command" = "ww" ]; then
+    show_report 'lastweek'
+
 elif [ "$command" = "W" ]; then
     show_report 'week' '' 'verbose'
+
+elif [ "$command" = "WW" ]; then
+    show_report 'lastweek' '' 'verbose'
 
 elif [ "$command" = "y" ]; then
     cd $trkdir
