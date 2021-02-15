@@ -356,6 +356,7 @@ show_report() {
         local last_monday_timestamp=`date -d 'last monday' +'%s'`
         local start_timestamp=$last_monday_timestamp
         # monday is 1 as documented in man date
+        today_weekday_number=`date +'%u'`
         if test ! $today_weekday_number -eq 1; then
             local secs_in_a_day=`expr 3600 \* 24`
             local secs_in_a_week=`expr $secs_in_a_day \* 7`
