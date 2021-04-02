@@ -61,43 +61,43 @@ setUp() {
 
 test_time_entry_regex_validation() {
     logt TIME_STRING_VALIDATION
-    $trk 1t testing
+    $trk testing 1t
     assertFalse "[ $? -eq 0 ]"
-    $trk f testing
+    $trk testing f
     assertFalse "[ $? -eq 0 ]"
-    $trk 1 testing
+    $trk testing 1
     assertFalse "[ $? -eq 0 ]"
-    $trk 10 testing
+    $trk testing 10
     assertFalse "[ $? -eq 0 ]"
 
-    $trk 100m testing
+    $trk testing 100m
     assertTrue "[ $? -eq 0 ]"
-    $trk 199h testing
+    $trk testing 199h
     assertTrue "[ $? -eq 0 ]"
-    $trk 1h testing
+    $trk testing 1h
     assertTrue "[ $? -eq 0 ]"
-    $trk 10h testing
+    $trk testing 10h
     assertTrue "[ $? -eq 0 ]"
-    $trk 20m testing
+    $trk testing 20m
     assertTrue "[ $? -eq 0 ]"
 }
 
 test_start_a_timer() {
     logt START_TIMER
-    $trk testing
+    $trk t testing
     assertTrue "test -f $trk_active_file"
     assertTrue "cat $trk_active_file | grep testing"
 }
 
 test_stop_a_timer() {
     logt STOP_TIMER
-    $trk testing
+    $trk t testing
     sleep 1
     $trk t
     assertTrue 'trk active file is not empty after a stop' \
         "test -z \"`head -n1 $trk_active_file`\""
     assertTrue "cat $trkfile | grep '[12]s'"
-    $trk testing
+    $trk t testing
     sleep 2
     $trk t
     assertTrue "cat $trkfile | grep '[34]s'"
@@ -105,18 +105,18 @@ test_stop_a_timer() {
 
 test_add_entry() {
     logt ADD_ENTRY
-    $trk 1h testing
+    $trk testing 1h
     assertTrue "grep 'testing 1h' $trkfile >/dev/null"
-    $trk 1h testing
+    $trk testing 1h
     assertTrue "grep 'testing 2h' $trkfile >/dev/null"
 
-    $trk 30m testing
+    $trk testing 30m
     assertTrue "grep 'testing 2h30m' $trkfile >/dev/null"
 }
 
 test_report() {
     logt REPORTS
-    $trk 1h testing
+    $trk testing 1h
     assertTrue "$trk | grep '1h spent on testing' >/dev/null"
     assertFalse "$trk | grep 'active entry' >/dev/null"
 
@@ -131,14 +131,14 @@ test_report() {
     assertTrue "$trk r month | grep '7h spent on monthtesting' >/dev/null"
     assertFalse "$trk | grep 'active entry' >/dev/null"
 
-    $trk activetesting
+    $trk t activetesting
     sleep 1
     assertTrue "$trk | grep 'activetesting' >/dev/null"
     assertTrue "$trk | grep 'active entry' >/dev/null"
 }
 
 test_trkfile_creation() {
-    $trk testing
+    $trk t testing
     assertFalse "trkfile is created empty on start timer!" "test -f $trkfile"
     $trk
     assertFalse "trkfile is created empty on today report!" "test -f $trkfile"
@@ -162,18 +162,18 @@ test_git_initial_handling() {
     cd -
 
     logt "doing the first push"
-    $trk 1h testing
+    $trk testing 1h
     $trk g add -A
     $trk g commit -m 'Init'
     $trk g push -u origin master
 
     logt "using autosync from now on"
-    $trk 1h testing
+    $trk testing 1h
     $trk y
 
     logt "handling a new file"
     tomorrow_trkfile="$trkdir/`date -d '1 day' +"$trkfile_date_format"`.log"
-    echo '1h test' > $tomorrow_trkfile
+    echo 'test 1h' > $tomorrow_trkfile
     $trk y
 }
 

@@ -40,15 +40,15 @@ help="
 Usage:
     trk
         shows a 'today' report
-    trk <entry_name>
+    trk t <entry_name>
         starts a timer tracking a named entry
-    trk <time_spent> <entry_name>
+    trk t
+        terminates the current timer
+    trk <entry_name> <time_spent>
         adds a new entry manually, with the specified time spent
         e.g.: '40m', '2h', '1h20m', etc., with 'h' and 'm' being
         [h]ours and [m]inutes
         (you can even use [d]ays and [s]econds, but why should you? :)
-    trk t
-        terminates the current timer
 
     trk r
     trk r today | week | month | lastweek | lastmonth
@@ -482,8 +482,13 @@ if [ -z "$command" ]; then
     echo "run [`basename $0` h] for help"
 
 elif [ "$command" = "t" ]; then
-    stop_timer
-    show_report 'today'
+    entry_to_start="$2"
+    if test -z "$entry_to_start"; then
+        stop_timer
+        show_report 'today'
+    else
+        start_timer "$entry_to_start"
+    fi
 
 elif [ "$command" = "l" ]; then
     cd $trkdir
@@ -555,12 +560,7 @@ elif [ "$command" = "--help" ] \
     echo "$help"
 else
     tag="$command"
-    if test -z "$2"; then
-        start_timer "$tag"
-    else
-        time_spent="$command"
-        tag="$2"
-        add_entry "$tag" "$time_spent"
-    fi
+    time_spent="$2"
+    add_entry "$tag" "$time_spent"
 fi
 

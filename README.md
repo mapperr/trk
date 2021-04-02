@@ -5,48 +5,47 @@ An unrefined cli time tracker.
 
 ## Usage
 
-    Usage:
-        trk
-            shows a 'today' report
-        trk <entry_name>
-            starts a timer tracking a named entry
-        trk <time_spent> <entry_name>
-            adds a new entry manually, with the specified time spent
-            e.g.: '40m', '2h', '1h20m', etc., with 'h' and 'm' being
-            [h]ours and [m]inutes
-            (you can even use [d]ays and [s]econds, but why should you? :)
-        trk t
-            terminates the current timer
+    trk
+        shows a 'today' report
+    trk t <entry_name>
+        starts a timer tracking a named entry
+    trk t
+        terminates the current timer
+    trk <entry_name> <time_spent>
+        adds a new entry manually, with the specified time spent
+        e.g.: '40m', '2h', '1h20m', etc., with 'h' and 'm' being
+        [h]ours and [m]inutes
+        (you can even use [d]ays and [s]econds, but why should you? :)
 
-        trk r
-        trk r today | week | month | lastweek | lastmonth
-            shows the current month report
-            or a report of the time range specified:
-            today, current week (starting from monday), current month, etc.
-        trk m | mm
-            shortcut to 'trk r month' or 'trk r lastmonth'
-        trk w | ww
-            shortcut to 'trk r week' or 'trk r lastweek'
-        trk M | MM
-        trk W | WW
-            same as above, but also reports each day of the time range
-        trk s <query>
-            greps through all trkfiles and report the results
-            useful if you want to know the total time spent on an entry
+    trk r
+    trk r today | week | month | lastweek | lastmonth
+        shows the current month report
+        or a report of the time range specified:
+        today, current week (starting from monday), current month, etc.
+    trk m | mm
+        shortcut to 'trk r month' or 'trk r lastmonth'
+    trk w | ww
+        shortcut to 'trk r week' or 'trk r lastweek'
+    trk M | MM
+    trk W | WW
+        same as above, but also reports each day of the time range
+    trk s <query>
+        greps through all trkfiles and report the results
+        useful if you want to know the total time spent on an entry
 
-        trk l
-            lists the trk files
-        trk e [trk_file]
-            edit the trk file directly, defaulting to today trkfile
-        trk y
-            sync: commits eventual changes and do a pull/push of the trk dir
-        trk g git_args
-            runs git with git_args in the trk dir
-        trk env
-            prints exports of trk vars,
-            eval-uating this output is useful for testing
-        trk help | h
-            shows help
+    trk l
+        lists the trk files
+    trk e [trk_file]
+        edit the trk file directly, defaulting to today trkfile
+    trk y
+        sync: commits eventual changes and do a pull/push of the trk dir
+    trk g git_args
+        runs git with git_args in the trk dir
+    trk env
+        prints exports of trk vars,
+        eval-uating this output is useful for testing
+    trk help | h
+        shows help
 
     Options:
         --help -h   Print this help
