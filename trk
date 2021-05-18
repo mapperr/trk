@@ -50,14 +50,15 @@ Usage:
         [h]ours and [m]inutes
         (you can even use [d]ays and [s]econds, but why should you? :)
 
-    trk r
-    trk r today | week | month | lastweek | lastmonth
+    trk r [-p]
+    trk r (today | week | month | lastweek | lastmonth) [-p]
         shows the current month report
         or a report of the time range specified:
         today, current week (starting from monday), current month, etc.
-    trk m | mm
+        with -p the output will be a parsable list of entries
+    trk (m | mm) [-p]
         shortcut to 'trk r month' or 'trk r lastmonth'
-    trk w | ww
+    trk (w | ww) [-p]
         shortcut to 'trk r week' or 'trk r lastweek'
     trk M | MM
     trk W | WW
@@ -315,44 +316,44 @@ show_query_report() {
 
 show_report() {
     local from="$1"
-    local to="$2"
-    local verbose="$3"
+    local verbose="$2"
+    local parsable="$3"
 
     local reportfile="$tmpdir/trkreportfile"
     test -f "$reportfile" && rm -f "$reportfile"
 
-    echo
+        test -z "$parsable" && echo
     if [ "$from" = "today" ]; then
         if test -f "$trkfile"; then
-        echo 'today report:'
-        _show_report "$trkfile"
+            test -z "$parsable" && echo 'today report:'
+            _show_report "$trkfile" "$parsable"
         else
             echo "No records for today"
         fi
 
     elif [ "$from" = "month" ]; then
-        echo 'monthly report:'
+        test -z "$parsable" && echo 'monthly report:'
         pattern="`date '+%Y-%m-*'`.log"
-        _show_report_from_file_pattern "$pattern" "$verbose"
+        _show_report_from_file_pattern "$pattern" "$verbose" "$parsable"
 
     elif [ "$from" = "lastmonth" ]; then
-        echo 'last month report:'
+        test -z "$parsable" && echo 'last month report:'
         local pattern="`_get_last_month_date_pattern`.log"
-        _show_report_from_file_pattern "$pattern" "$verbose"
+        _show_report_from_file_pattern "$pattern" "$verbose" "$parsable"
 
     elif [ "$from" = "week" ]; then
-        echo 'weekly report:'
+        test -z "$parsable" && echo 'weekly report:'
         today_weekday_number=`date +'%u'`
         # monday is 1 as documented in man date
         if test $today_weekday_number -eq 1; then
-            _show_report "$trkfile"
+            _show_report "$trkfile" "$parsable"
         else
             last_monday_timestamp=`date -d 'last monday' +'%s'`
             _show_report_from_timestamp_and_offset \
-                $last_monday_timestamp 7 "$verbose"
+                $last_monday_timestamp 7 "$verbose" "$parsable"
         fi
     elif [ "$from" = "lastweek" ]; then
-        echo 'lastweek report:'
+        test -z "$parsable" && echo 'lastweek report:'
         local last_monday_timestamp=`date -d 'last monday' +'%s'`
         local start_timestamp=$last_monday_timestamp
         # monday is 1 as documented in man date
@@ -363,11 +364,11 @@ show_report() {
             local start_timestamp=`expr $last_monday_timestamp - $secs_in_a_week`
         fi
         _show_report_from_timestamp_and_offset \
-            $start_timestamp 7 "$verbose"
+            $start_timestamp 7 "$verbose" "$parsable"
     fi
 
     active_entry=`get_active_entry`
-    if test ! -z "$active_entry"; then
+    if test ! -z "$active_entry" && test -z "$parsable"; then
         echo
         print_active_entry_info $active_entry
     fi
@@ -376,26 +377,34 @@ show_report() {
 _show_report_from_file_pattern() {
     local pattern="$1"
     local verbose="$2"
+    local parsable="$3"
 
-    if test ! -z "$verbose"; then
+    if test ! -z "$verbose" || test ! -z "$parsable"; then
         for f in `ls -1 $trkdir/$pattern`; do
-            echo
-            echo "`basename $f | sed 's/\.log$//'`:"
-            _show_report $f
+            if test -z "$parsable"; then
+                echo
+                echo "`basename $f | sed 's/\.log$//'`:"
+                _show_report "$f" "$parsable"
+            else
+                _show_report "$f" "$parsable"
+            fi
         done
     fi
-    echo
-    echo '>> totals:'
-    cat $trkdir/$pattern >$reportfile
-    compact_tags "$reportfile"
-    _show_report "$reportfile"
-    test -f "$reportfile" && rm -f "$reportfile"
+    if test -z "$parsable"; then
+        echo
+        echo '>> totals:'
+        cat $trkdir/$pattern >$reportfile
+        compact_tags "$reportfile"
+        _show_report "$reportfile"
+        test -f "$reportfile" && rm -f "$reportfile"
+    fi
 }
 
 _show_report_from_timestamp_and_offset() {
     local start_timestamp="$1"
     local offset_in_days="$2"
     local verbose="$3"
+    local parsable="$4"
 
     local reportfile="$tmpdir/trkreportfile"
 
@@ -407,27 +416,36 @@ _show_report_from_timestamp_and_offset() {
         file_date=`date -d "@$secs" +"$trkfile_date_format"`
         file="$file_date.log"
         test -r "$trkdir/$file" && cat $trkdir/$file >>$reportfile
-        if test ! -z "$verbose"; then
-            echo
-            echo "$file_date:"
-            test -r "$trkdir/$file" && _show_report "$trkdir/$file"
-            test -r "$trkdir/$file" || echo 'no tracking'
+        if test ! -z "$verbose" || test ! -z "$parsable"; then
+            if test -z "$parsable"; then
+                echo
+                echo "$file_date:"
+                test -r "$trkdir/$file" && _show_report "$trkdir/$file"
+                test -r "$trkdir/$file" || echo 'no tracking'
+            else
+                test -r "$trkdir/$file" && _show_report "$trkdir/$file" "$parsable"
+            fi
         fi
         counter=`expr $counter - 1`
         secs=`expr $secs + $secs_in_a_day`
     done
-    echo
-    echo '>> totals:'
-    compact_tags "$reportfile"
-    _show_report "$reportfile"
-    test -f "$reportfile" && rm -f "$reportfile"
+    if test -z "$parsable"; then
+        echo
+        echo '>> totals:'
+        compact_tags "$reportfile"
+        _show_report "$reportfile"
+        test -f "$reportfile" && rm -f "$reportfile"
+    fi
 }
 
 _show_report() {
     local trkfile_to_report="$1"
+    local parsable="$2"
 
     total_seconds_spent=0
-    echo
+    if test -z "$parsable"; then
+        echo
+    fi
     while read entry; do
         log "found entry [$entry]"
         tag=`echo "$entry" | cut -d ' ' -f 1`
@@ -435,11 +453,17 @@ _show_report() {
         log "time_spent [$time_spent]"
         seconds_spent=`get_seconds_from_friendly_time $time_spent`
         total_seconds_spent=`expr $total_seconds_spent + $seconds_spent`
-        print_entry_info "$tag" "$time_spent"
+        if test -z "$parsable"; then
+            echo "$time_spent spent on $tag"
+        else
+            echo "`basename $trkfile_to_report | sed 's/\.log$//'` $time_spent $tag"
+        fi
     done < "$trkfile_to_report"
-    echo
-    tot_friendly_time="`get_friendly_time_from_seconds "$total_seconds_spent"`"
-    echo "[$tot_friendly_time] spent in total"
+    if test -z "$parsable"; then
+        echo
+        tot_friendly_time="`get_friendly_time_from_seconds "$total_seconds_spent"`"
+        echo "[$tot_friendly_time] spent in total"
+    fi
 }
 
 _get_last_month_date_pattern() {
@@ -458,12 +482,6 @@ _get_last_month_date_pattern() {
     else
         echo -n "$current_year-$last_month-*"
     fi
-}
-
-print_entry_info() {
-    local tag="$1"
-    local time="$2"
-    echo "$time spent on $tag"
 }
 
 print_active_entry_info() {
@@ -504,40 +522,43 @@ elif [ "$command" = "s" ]; then
     show_query_report "$query"
 
 elif [ "$command" = "r" ]; then
-    from="$2"
-    to="$3"
-    test -z "$from" && from="month"
-    show_report $from $to
+    timerange="$2"
+    parsable="$3"
+    test -z "$timerange" && timerange="month"
+    show_report $timerange '' $parsable
 
 elif [ "$command" = "R" ]; then
-    from="$2"
-    to="$3"
-    test -z "$from" && from="month"
-    show_report "$from" "$to" "verbose"
+    timerange="$2"
+    test -z "$timerange" && timerange="month"
+    show_report "$timerange" 'verbose'
 
 elif [ "$command" = "m" ]; then
-    show_report 'month'
+    parsable="$2"
+    show_report 'month' '' "$parsable"
 
 elif [ "$command" = "mm" ]; then
-    show_report 'lastmonth'
+    parsable="$2"
+    show_report 'lastmonth' '' "$parsable"
 
 elif [ "$command" = "M" ]; then
-    show_report 'month' '' 'verbose'
+    show_report 'month' 'verbose'
 
 elif [ "$command" = "MM" ]; then
-    show_report 'lastmonth' '' 'verbose'
+    show_report 'lastmonth' 'verbose'
 
 elif [ "$command" = "w" ]; then
-    show_report 'week'
+    parsable="$2"
+    show_report 'week' '' "$parsable"
 
 elif [ "$command" = "ww" ]; then
-    show_report 'lastweek'
+    parsable="$2"
+    show_report 'lastweek' '' "$parsable"
 
 elif [ "$command" = "W" ]; then
-    show_report 'week' '' 'verbose'
+    show_report 'week' 'verbose'
 
 elif [ "$command" = "WW" ]; then
-    show_report 'lastweek' '' 'verbose'
+    show_report 'lastweek' 'verbose'
 
 elif [ "$command" = "y" ]; then
     cd $trkdir
