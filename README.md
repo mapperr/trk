@@ -18,13 +18,14 @@ An unrefined cli time tracker.
         (you can even use [d]ays and [s]econds, but why should you? :)
 
     trk r
-    trk r today | week | month | lastweek | lastmonth
+    trk r (today | week | month | lastweek | lastmonth) [-p]
         shows the current month report
         or a report of the time range specified:
         today, current week (starting from monday), current month, etc.
-    trk m | mm
+        with -p the output will be a parsable list of entries
+    trk (m | mm) [-p]
         shortcut to 'trk r month' or 'trk r lastmonth'
-    trk w | ww
+    trk (w | ww) [-p]
         shortcut to 'trk r week' or 'trk r lastweek'
     trk M | MM
     trk W | WW

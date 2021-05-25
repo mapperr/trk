@@ -50,7 +50,7 @@ Usage:
         [h]ours and [m]inutes
         (you can even use [d]ays and [s]econds, but why should you? :)
 
-    trk r [-p]
+    trk r
     trk r (today | week | month | lastweek | lastmonth) [-p]
         shows the current month report
         or a report of the time range specified:
