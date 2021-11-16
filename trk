@@ -67,6 +67,7 @@ Usage:
     trk s <query> [start_date end_date]
         greps through all trkfiles and report the results
         useful if you want to know the total time spent on an entry.
+        It *greps*, so if your query is '.*' it will report ALL activities.
         To limit search you can pass a partial date (like 2020 or 2020-03),
         or you can pass a date interval (like 2020-01-01 2020-04-30).
 
@@ -317,15 +318,16 @@ show_query_report() {
         local reportfile="$tmpdir/trkreportfile"
         cat $trkdir/$start_or_partial_date*.log >"$reportfile.tmp"
         grep "$query" "$reportfile.tmp" > "$reportfile"
-        compact_tags "$reportfile"
-        _show_report "$reportfile"
-        test -f "$reportfile" && rm -f "$reportfile"
-        test -f "$reportfile.tmp" && rm -f "$reportfile.tmp"
     else
         echo "not yet implemented" >&2
         echo "use the 'search <query> <partial_date>' command" >&2
         # build interval date report
     fi
+
+    compact_tags "$reportfile"
+    _show_report "$reportfile"
+    test -f "$reportfile" && rm -f "$reportfile"
+    test -f "$reportfile.tmp" && rm -f "$reportfile.tmp"
 }
 
 show_report() {

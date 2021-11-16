@@ -34,6 +34,7 @@ An unrefined cli time tracker.
     trk s <query> [start_date end_date]
         greps through all trkfiles and report the results
         useful if you want to know the total time spent on an entry.
+        It *greps*, so if your query is '.*' it will report ALL activities.
         To limit search you can pass a partial date (like 2020 or 2020-03),
         or you can pass a date interval (like 2020-01-01 2020-04-30).
 
