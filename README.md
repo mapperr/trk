@@ -30,9 +30,12 @@ An unrefined cli time tracker.
     trk M | MM
     trk W | WW
         same as above, but also reports each day of the time range
-    trk s <query>
+    trk s <query> [partial_date]
+    trk s <query> [start_date end_date]
         greps through all trkfiles and report the results
-        useful if you want to know the total time spent on an entry
+        useful if you want to know the total time spent on an entry.
+        To limit search you can pass a partial date (like 2020 or 2020-03),
+        or you can pass a date interval (like 2020-01-01 2020-04-30).
 
     trk l
         lists the trk files
