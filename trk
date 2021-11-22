@@ -484,7 +484,7 @@ _show_report() {
         log "found entry [$entry]"
         tag=`echo "$entry" | cut -d ' ' -f 1`
         time_spent=`echo "$entry" | cut -d ' ' -f 2`
-        notes="`echo "$entry" | sed "s/^$tag $time_spent //"`"
+        notes="`echo -n "$entry" | sed "s/^$tag $time_spent//" | sed 's/^ //'`"
         log "time_spent [$time_spent]"
         seconds_spent=`get_seconds_from_friendly_time $time_spent`
         total_seconds_spent=`expr $total_seconds_spent + $seconds_spent`
