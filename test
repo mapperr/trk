@@ -100,18 +100,28 @@ test_stop_a_timer() {
     $trk t testing
     sleep 2
     $trk t
-    assertTrue "cat $trkfile | grep '[34]s'"
+    assertTrue "cat $trkfile | grep '[12]s'"
+    assertTrue "cat $trkfile | grep '[23]s'"
 }
 
 test_add_entry() {
     logt ADD_ENTRY
     $trk testing 1h
     assertTrue "grep 'testing 1h' $trkfile >/dev/null"
-    $trk testing 1h
+    $trk testing 2h
+    assertTrue "grep 'testing 1h' $trkfile >/dev/null"
     assertTrue "grep 'testing 2h' $trkfile >/dev/null"
 
     $trk testing 30m
-    assertTrue "grep 'testing 2h30m' $trkfile >/dev/null"
+    assertTrue "grep 'testing 1h' $trkfile >/dev/null"
+    assertTrue "grep 'testing 2h' $trkfile >/dev/null"
+    assertTrue "grep 'testing 30m' $trkfile >/dev/null"
+
+    $trk testing 45m working on issues
+    assertTrue "grep 'testing 1h' $trkfile >/dev/null"
+    assertTrue "grep 'testing 2h' $trkfile >/dev/null"
+    assertTrue "grep 'testing 30m' $trkfile >/dev/null"
+    assertTrue "grep 'testing 45m working on issues' $trkfile >/dev/null"
 }
 
 test_report() {

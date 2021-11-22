@@ -11,7 +11,7 @@ An unrefined cli time tracker.
         starts a timer tracking a named entry
     trk t
         terminates the current timer
-    trk <entry_name> <time_spent>
+    trk <entry_name> <time_spent> [notes]
         adds a new entry manually, with the specified time spent
         e.g.: '40m', '2h', '1h20m', etc., with 'h' and 'm' being
         [h]ours and [m]inutes

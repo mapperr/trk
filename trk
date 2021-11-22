@@ -44,7 +44,7 @@ Usage:
         starts a timer tracking a named entry
     trk t
         terminates the current timer
-    trk <entry_name> <time_spent>
+    trk <entry_name> <time_spent> [notes]
         adds a new entry manually, with the specified time spent
         e.g.: '40m', '2h', '1h20m', etc., with 'h' and 'm' being
         [h]ours and [m]inutes
@@ -143,7 +143,7 @@ stop_timer() {
         humanized_time_spent=`get_friendly_time_from_seconds "$seconds_spent"`
         echo "$tag $humanized_time_spent" >> "$trkfile"
         echo -n '' > "$trk_active_file"
-        compact_tags "$trkfile"
+        # compact_tags "$trkfile"
     else
         echo "no active timer to stop" 
     fi
@@ -234,6 +234,7 @@ get_friendly_time_from_seconds() {
 add_entry() {
     local tag="$1"
     local time_spent="$2"
+    local notes="$3"
 
     if [ -z "$tag" ]; then
         echo "missing tag"
@@ -248,10 +249,10 @@ add_entry() {
         exit 1
     fi
 
-    entry="$tag $time_spent"
+    entry="$tag $time_spent $notes"
     log "adding entry [$entry]"
     echo "$entry" >> "$trkfile"
-    compact_tags "$trkfile"
+    # compact_tags "$trkfile"
 }
 
 get_unique_tag_list() {
@@ -339,11 +340,16 @@ show_report() {
     local reportfile="$tmpdir/trkreportfile"
     test -f "$reportfile" && rm -f "$reportfile"
 
-        test -z "$parsable" && echo
+    test -z "$parsable" && echo
     if [ "$from" = "today" ]; then
         if test -f "$trkfile"; then
-            test -z "$parsable" && echo 'today report:'
-            _show_report "$trkfile" "$parsable"
+            local reportfile="$tmpdir/`basename "$trkfile"`"
+            cp -f "$trkfile" "$reportfile"
+            if test -z "$parsable"; then
+                echo 'today report:'
+                compact_tags "$reportfile"
+            fi
+            _show_report "$reportfile" "$parsable"
         else
             echo "No records for today"
         fi
@@ -363,7 +369,17 @@ show_report() {
         today_weekday_number=`date +'%u'`
         # monday is 1 as documented in man date
         if test $today_weekday_number -eq 1; then
-            _show_report "$trkfile" "$parsable"
+            if test -f "$trkfile"; then
+                local reportfile="$tmpdir/`basename "$trkfile"`"
+                cp -f "$trkfile" "$reportfile"
+                if test -z "$parsable"; then
+                    echo 'today report:'
+                    compact_tags "$reportfile"
+                fi
+                _show_report "$reportfile" "$parsable"
+            else
+                echo "No records for today"
+            fi
         else
             last_monday_timestamp=`date -d 'last monday' +'%s'`
             _show_report_from_timestamp_and_offset \
@@ -468,13 +484,14 @@ _show_report() {
         log "found entry [$entry]"
         tag=`echo "$entry" | cut -d ' ' -f 1`
         time_spent=`echo "$entry" | cut -d ' ' -f 2`
+        notes="`echo "$entry" | sed "s/^$tag $time_spent //"`"
         log "time_spent [$time_spent]"
         seconds_spent=`get_seconds_from_friendly_time $time_spent`
         total_seconds_spent=`expr $total_seconds_spent + $seconds_spent`
         if test -z "$parsable"; then
             echo "$time_spent spent on $tag"
         else
-            echo "`basename $trkfile_to_report | sed 's/\.log$//'` $time_spent $tag"
+            echo "`basename $trkfile_to_report | sed 's/\.log$//'` $time_spent $tag $notes"
         fi
     done < "$trkfile_to_report"
     if test -z "$parsable"; then
@@ -602,6 +619,10 @@ elif [ "$command" = "--help" ] \
 else
     tag="$command"
     time_spent="$2"
-    add_entry "$tag" "$time_spent"
+    if test ! -z "$tag" && test ! -z "$time_spent"; then
+        shift 2
+        notes="$@"
+    fi
+    add_entry "$tag" "$time_spent" "$notes"
 fi
 
