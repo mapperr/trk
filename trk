@@ -4,22 +4,22 @@ trkfile_date_format="%Y-%m-%d"
 trkdir_default="$HOME/.trk"
 trkdir="$trkdir_default"
 if [ ! -z "$TRK_DIR" ]; then
-    trkdir="$TRK_DIR"
+	trkdir="$TRK_DIR"
 fi
-trkfile="$trkdir/`date +$trkfile_date_format`.log"
+trkfile="$trkdir/$(date +$trkfile_date_format).log"
 trk_active_file="$trkdir/active_timer"
 
 trk_workday_hours_default=8
 trk_workday_hours=$trk_workday_hours_default
 if [ ! -z "$TRK_WORKDAY_HOURS" ]; then
-    trk_workday_hours="$TRK_WORKDAY_HOURS"
+	trk_workday_hours="$TRK_WORKDAY_HOURS"
 fi
 
 tmpdir_default='/tmp'
 tmpdir="$tmpdir_default"
 if [ ! -z "$TMPDIR" ]; then
-    # works in termux
-    tmpdir="$TMPDIR"
+	# works in termux
+	tmpdir="$TMPDIR"
 fi
 
 tag_valid_regex='[0-9A-Za-z_-]*'
@@ -27,7 +27,7 @@ time_entry_valid_regex_hours='[0-9]\{1,\}h'
 time_entry_valid_regex_minutes='[0-9]\{1,\}m'
 
 print_env() {
-echo "
+	echo "
 export trkdir='$trkdir'
 export trk_active_file='$trk_active_file'
 export trkfile='$trkfile'
@@ -97,432 +97,432 @@ Notes:
 "
 
 log() {
-    local msg="$1"
-    test -z "$TRK_DEBUG" || echo "$msg" >&2
+	local msg="$1"
+	test -z "$TRK_DEBUG" || echo "$msg" >&2
 }
 
 ensure_trkdir_is_present() {
-    test -d $trkdir || mkdir -p $trkdir
+	test -d $trkdir || mkdir -p $trkdir
 }
 
 ensure_trkfile_is_present() {
-    ensure_trkdir_is_present
-    test -f "$trkfile" || touch "$trkfile"
+	ensure_trkdir_is_present
+	test -f "$trkfile" || touch "$trkfile"
 }
 
 edit_trkfile() {
-    local filename="$1"
-    local filepath="$trkdir/$file_name.log"
+	local filename="$1"
+	local filepath="$trkdir/$filename.log"
 
-    if test -z "$filename"; then
-        $EDITOR "$trkfile"
-    elif test -r ; then
-        $EDITOR "$filepath"
-    else
-        echo "no trk file named [$filename]" >&2
-    fi
+	if test -z "$filename"; then
+		$EDITOR "$trkfile"
+	elif test -r "$filepath"; then
+		$EDITOR "$filepath"
+	else
+		echo "no trk file named [$filename]" >&2
+	fi
 }
 
 get_timestamp() {
-    date '+%s'
+	date '+%s'
 }
 
 is_there_a_pending_timer() {
-    test -f $trk_active_file || return 2
-    test ! -z "`cat $trk_active_file`"
+	test -f $trk_active_file || return 2
+	test ! -z "$(cat $trk_active_file)"
 }
 
 stop_timer() {
-    ensure_trkfile_is_present
-    if is_there_a_pending_timer; then
-        tag=`cat "$trk_active_file" | cut -d ' ' -f 1`
-        start_ts=`cat "$trk_active_file" | cut -d ' ' -f 2`
-        log "start timestamp: [$start_ts]"
-        now=`get_timestamp`
-        seconds_spent=`expr $now - $start_ts`
-        humanized_time_spent=`get_friendly_time_from_seconds "$seconds_spent"`
-        echo "$tag $humanized_time_spent" >> "$trkfile"
-        echo -n '' > "$trk_active_file"
-        # compact_tags "$trkfile"
-    else
-        echo "no active timer to stop" 
-    fi
+	ensure_trkfile_is_present
+	if is_there_a_pending_timer; then
+		tag=$(cat "$trk_active_file" | cut -d ' ' -f 1)
+		start_ts=$(cat "$trk_active_file" | cut -d ' ' -f 2)
+		log "start timestamp: [$start_ts]"
+		now=$(get_timestamp)
+		seconds_spent=$(expr $now - $start_ts)
+		humanized_time_spent=$(get_friendly_time_from_seconds "$seconds_spent")
+		echo "$tag $humanized_time_spent" >>"$trkfile"
+		echo -n '' >"$trk_active_file"
+		# compact_tags "$trkfile"
+	else
+		echo "no active timer to stop"
+	fi
 }
 
 start_timer() {
-    local tag="$1"
-    local now=`get_timestamp`
+	local tag="$1"
+	local now=$(get_timestamp)
 
-    is_there_a_pending_timer && stop_timer
-    echo "$tag $now" >> "$trk_active_file"
+	is_there_a_pending_timer && stop_timer
+	echo "$tag $now" >>"$trk_active_file"
 }
 
 validate_time_string() {
-    local time_string="$1"
-    local is_valid=1
-    if echo "$time_string" | grep -o "$time_entry_valid_regex_hours" >/dev/null \
-        || echo "$time_string" | grep -o "$time_entry_valid_regex_minutes" >/dev/null; then
-        is_valid=0
-    fi
-    return $is_valid
+	local time_string="$1"
+	local is_valid=1
+	if echo "$time_string" | grep -o "$time_entry_valid_regex_hours" >/dev/null ||
+		echo "$time_string" | grep -o "$time_entry_valid_regex_minutes" >/dev/null; then
+		is_valid=0
+	fi
+	return $is_valid
 }
 
 get_seconds_from_friendly_time() {
-    local time_spent="$1"
+	local time_spent="$1"
 
-    days=`echo "$time_spent" | grep -o '[0-9]*d' | tr -d 'd'`
-    hours=`echo "$time_spent" | grep -o '[0-9]*h' | tr -d 'h'`
-    minutes=`echo "$time_spent" | grep -o '[0-9]*m' | tr -d 'm'`
-    seconds=`echo "$time_spent" | grep -o '[0-9]*s' | tr -d 's'`
-    
-    workdays_in_hours=0
-    test -z "$days" || \
-       workdays_in_hours=`expr $trk_workday_hours \* $days`
-    test -z "$hours" && hours=0
-    dateline="`expr $workdays_in_hours + $hours` hours"
-    test -z "$minutes" || dateline="$dateline $minutes minutes"
-    test -z "$seconds" || dateline="$dateline $seconds seconds"
+	days=$(echo "$time_spent" | grep -o '[0-9]*d' | tr -d 'd')
+	hours=$(echo "$time_spent" | grep -o '[0-9]*h' | tr -d 'h')
+	minutes=$(echo "$time_spent" | grep -o '[0-9]*m' | tr -d 'm')
+	seconds=$(echo "$time_spent" | grep -o '[0-9]*s' | tr -d 's')
 
-    log "dateline [$dateline]"
+	workdays_in_hours=0
+	test -z "$days" ||
+		workdays_in_hours=$(expr $trk_workday_hours \* $days)
+	test -z "$hours" && hours=0
+	dateline="$(expr $workdays_in_hours + $hours) hours"
+	test -z "$minutes" || dateline="$dateline $minutes minutes"
+	test -z "$seconds" || dateline="$dateline $seconds seconds"
 
-    now=`get_timestamp`
-    future=`date -d "$dateline" '+%s'`
-    secsspent=`expr $future - $now`
-    log "time spent [$time_spent] is [$secsspent] seconds"
-    echo -n "$secsspent"
+	log "dateline [$dateline]"
+
+	now=$(get_timestamp)
+	future=$(date -d "$dateline" '+%s')
+	secsspent=$(expr $future - $now)
+	log "time spent [$time_spent] is [$secsspent] seconds"
+	echo -n "$secsspent"
 }
 
 get_friendly_time_from_seconds() {
-    local seconds_spent="$1"
-    
-    log "converting [$seconds_spent] seconds to time spent"
+	local seconds_spent="$1"
 
-    timeline="${seconds_spent}s"
-    minutes_spent=`expr $seconds_spent / 60`
-    hours_spent=`expr $minutes_spent / 60`
-    days_spent=`expr $hours_spent / $trk_workday_hours`
+	log "converting [$seconds_spent] seconds to time spent"
 
-    if [ $hours_spent -ge $trk_workday_hours ]; then
-        days_in_hours=`expr $days_spent \* $trk_workday_hours`
-        hours_remainder=`expr $hours_spent - $days_in_hours`
-        hours_in_minutes=`expr $hours_spent \* 60`
-        minutes_remainder=`expr $minutes_spent - $hours_in_minutes`
-        timeline="${days_spent}d"
-        test $hours_remainder -gt 0 && \
-            timeline="${days_spent}d${hours_remainder}h"
-        test $minutes_remainder -gt 0 && \
-            timeline="${days_spent}d${minutes_remainder}m"
-        test $hours_remainder -gt 0 && \
-            test $minutes_remainder -gt 0 && \
-        timeline="${days_spent}d${hours_remainder}h${minutes_remainder}m"
+	timeline="${seconds_spent}s"
+	minutes_spent=$(expr $seconds_spent / 60)
+	hours_spent=$(expr $minutes_spent / 60)
+	days_spent=$(expr $hours_spent / $trk_workday_hours)
 
-    elif [ $minutes_spent -ge 60 ]; then
-        hours_in_minutes=`expr $hours_spent \* 60`
-        minutes_remainder=`expr $minutes_spent - $hours_in_minutes`
-        timeline="${hours_spent}h"
-        test $minutes_remainder -gt 0 && \
-            timeline="${hours_spent}h${minutes_remainder}m"
+	if [ $hours_spent -ge $trk_workday_hours ]; then
+		days_in_hours=$(expr $days_spent \* $trk_workday_hours)
+		hours_remainder=$(expr $hours_spent - $days_in_hours)
+		hours_in_minutes=$(expr $hours_spent \* 60)
+		minutes_remainder=$(expr $minutes_spent - $hours_in_minutes)
+		timeline="${days_spent}d"
+		test $hours_remainder -gt 0 &&
+			timeline="${days_spent}d${hours_remainder}h"
+		test $minutes_remainder -gt 0 &&
+			timeline="${days_spent}d${minutes_remainder}m"
+		test $hours_remainder -gt 0 &&
+			test $minutes_remainder -gt 0 &&
+			timeline="${days_spent}d${hours_remainder}h${minutes_remainder}m"
 
-    elif [ $seconds_spent -ge 60 ]; then
-        timeline="${minutes_spent}m"
-    fi
+	elif [ $minutes_spent -ge 60 ]; then
+		hours_in_minutes=$(expr $hours_spent \* 60)
+		minutes_remainder=$(expr $minutes_spent - $hours_in_minutes)
+		timeline="${hours_spent}h"
+		test $minutes_remainder -gt 0 &&
+			timeline="${hours_spent}h${minutes_remainder}m"
 
-    log "[$seconds_spent] seconds are [$timeline] time spent"
-    echo "$timeline"
+	elif [ $seconds_spent -ge 60 ]; then
+		timeline="${minutes_spent}m"
+	fi
+
+	log "[$seconds_spent] seconds are [$timeline] time spent"
+	echo "$timeline"
 }
 
 add_entry() {
-    local tag="$1"
-    local time_spent="$2"
-    local notes="$3"
+	local tag="$1"
+	local time_spent="$2"
+	local notes="$3"
 
-    if [ -z "$tag" ]; then
-        echo "missing tag"
-        exit 1
-    fi
-    if [ -z "$time_spent" ]; then
-        echo "missing time spent"
-        exit 1
-    fi
-    if ! validate_time_string "$time_spent"; then
-        echo "invalid time string"
-        exit 1
-    fi
+	if [ -z "$tag" ]; then
+		echo "missing tag"
+		exit 1
+	fi
+	if [ -z "$time_spent" ]; then
+		echo "missing time spent"
+		exit 1
+	fi
+	if ! validate_time_string "$time_spent"; then
+		echo "invalid time string"
+		exit 1
+	fi
 
-    entry="$tag $time_spent $notes"
-    log "adding entry [$entry]"
-    echo "$entry" >> "$trkfile"
-    # compact_tags "$trkfile"
+	entry="$tag $time_spent $notes"
+	log "adding entry [$entry]"
+	echo "$entry" >>"$trkfile"
+	# compact_tags "$trkfile"
 }
 
 get_unique_tag_list() {
-    local trkfile_to_compact="$1"
-    test -z "$trkfile_to_compact" && trkfile_to_compact="$trkfile"
-    test -r "$trkfile_to_compact" && \
-        cat $trkfile_to_compact | grep -o "^$tag_valid_regex" | sort | uniq
+	local trkfile_to_compact="$1"
+	test -z "$trkfile_to_compact" && trkfile_to_compact="$trkfile"
+	test -r "$trkfile_to_compact" &&
+		cat $trkfile_to_compact | grep -o "^$tag_valid_regex" | sort | uniq
 }
 
 compact_tags() {
-    local trkfile_to_compact="$1"
-    test -z "$trkfile_to_compact" && trkfile_to_compact="$trkfile"
-    local temp_trk_file="$tmpdir/`basename $trkfile_to_compact`-compacting"
+	local trkfile_to_compact="$1"
+	test -z "$trkfile_to_compact" && trkfile_to_compact="$trkfile"
+	local temp_trk_file="$tmpdir/$(basename $trkfile_to_compact)-compacting"
 
-    test -f $temp_trk_file && rm -f $temp_trk_file
-    unique_tag_list=`get_unique_tag_list "$trkfile_to_compact"`
-    for tag in $unique_tag_list; do
-        log "processing tag [$tag]"
-        tag_total_seconds_spent=0
-        while read entry; do
-            echo -n "$entry" | \
-                grep "^$tag " >/dev/null || \
-                continue
-            log "found entry [$entry]"
-            time_spent=`echo "$entry" | cut -d ' ' -f 2`
-            log "time_spent [$time_spent]"
-            seconds_spent=`get_seconds_from_friendly_time $time_spent`
-            tag_total_seconds_spent=`expr $tag_total_seconds_spent + $seconds_spent`
-        done < "$trkfile_to_compact"
-        humanized_time_spent=`get_friendly_time_from_seconds "$tag_total_seconds_spent"`
-        echo "$tag $humanized_time_spent" >> "$temp_trk_file"
-    done
-    test -f "$temp_trk_file" && \
-        mv -f "$temp_trk_file" "$trkfile_to_compact"
-    test -f "$temp_trk_file" && rm -f "$temp_trk_file"
-    return 0
+	test -f $temp_trk_file && rm -f $temp_trk_file
+	unique_tag_list=$(get_unique_tag_list "$trkfile_to_compact")
+	for tag in $unique_tag_list; do
+		log "processing tag [$tag]"
+		tag_total_seconds_spent=0
+		while read entry; do
+			echo -n "$entry" |
+				grep "^$tag " >/dev/null ||
+				continue
+			log "found entry [$entry]"
+			time_spent=$(echo "$entry" | cut -d ' ' -f 2)
+			log "time_spent [$time_spent]"
+			seconds_spent=$(get_seconds_from_friendly_time $time_spent)
+			tag_total_seconds_spent=$(expr $tag_total_seconds_spent + $seconds_spent)
+		done <"$trkfile_to_compact"
+		humanized_time_spent=$(get_friendly_time_from_seconds "$tag_total_seconds_spent")
+		echo "$tag $humanized_time_spent" >>"$temp_trk_file"
+	done
+	test -f "$temp_trk_file" &&
+		mv -f "$temp_trk_file" "$trkfile_to_compact"
+	test -f "$temp_trk_file" && rm -f "$temp_trk_file"
+	return 0
 }
 
 get_active_entry() {
-    if ! is_there_a_pending_timer; then
-        return
-    fi
-    local now=`get_timestamp`
-    local tag=`cat "$trk_active_file" | cut -d ' ' -f 1`
-    local entry_start_time=`cat "$trk_active_file" | cut -d ' ' -f 2`
+	if ! is_there_a_pending_timer; then
+		return
+	fi
+	local now=$(get_timestamp)
+	local tag=$(cat "$trk_active_file" | cut -d ' ' -f 1)
+	local entry_start_time=$(cat "$trk_active_file" | cut -d ' ' -f 2)
 
-    log "entry_start_time: [$entry_start_time]"
-    log "tag: [$tag]"
+	log "entry_start_time: [$entry_start_time]"
+	log "tag: [$tag]"
 
-    local seconds_spent=`expr $now - $entry_start_time`
-    local friendly_time=`get_friendly_time_from_seconds "$seconds_spent"`
+	local seconds_spent=$(expr $now - $entry_start_time)
+	local friendly_time=$(get_friendly_time_from_seconds "$seconds_spent")
 
-    echo -n "$tag $friendly_time"
+	echo -n "$tag $friendly_time"
 }
 
 show_query_report() {
-    local query="$1"
-    local start_or_partial_date="$2"
-    local end_date="$3"
+	local query="$1"
+	local start_or_partial_date="$2"
+	local end_date="$3"
 
-    test -z "$query" && return
-    local reportfile="$tmpdir/trkreportfile"
+	test -z "$query" && return
+	local reportfile="$tmpdir/trkreportfile"
 
-    if test -z "$end_date"; then
-        # if start_or_partial_date is blank we build a lifetime report
-        cat $trkdir/$start_or_partial_date*.log >"$reportfile.tmp"
-        grep "$query" "$reportfile.tmp" > "$reportfile"
-    else
-        echo "not yet implemented" >&2
-        echo "use the 'search <query> <partial_date>' command" >&2
-        # build interval date report
-    fi
+	if test -z "$end_date"; then
+		# if start_or_partial_date is blank we build a lifetime report
+		cat $trkdir/$start_or_partial_date*.log >"$reportfile.tmp"
+		grep "$query" "$reportfile.tmp" >"$reportfile"
+	else
+		echo "not yet implemented" >&2
+		echo "use the 'search <query> <partial_date>' command" >&2
+		# build interval date report
+	fi
 
-    compact_tags "$reportfile"
-    _show_report "$reportfile"
-    test -f "$reportfile" && rm -f "$reportfile"
-    test -f "$reportfile.tmp" && rm -f "$reportfile.tmp"
+	compact_tags "$reportfile"
+	_show_report "$reportfile"
+	test -f "$reportfile" && rm -f "$reportfile"
+	test -f "$reportfile.tmp" && rm -f "$reportfile.tmp"
 }
 
 show_report() {
-    local from="$1"
-    local verbose="$2"
-    local parsable="$3"
+	local from="$1"
+	local verbose="$2"
+	local parsable="$3"
 
-    local reportfile="$tmpdir/trkreportfile"
-    test -f "$reportfile" && rm -f "$reportfile"
+	local reportfile="$tmpdir/trkreportfile"
+	test -f "$reportfile" && rm -f "$reportfile"
 
-    test -z "$parsable" && echo
-    if [ "$from" = "today" ]; then
-        if test -f "$trkfile"; then
-            local reportfile="$tmpdir/`basename "$trkfile"`"
-            cp -f "$trkfile" "$reportfile"
-            if test -z "$parsable"; then
-                echo 'today report:'
-                compact_tags "$reportfile"
-            fi
-            _show_report "$reportfile" "$parsable"
-        else
-            echo "No records for today"
-        fi
+	test -z "$parsable" && echo
+	if [ "$from" = "today" ]; then
+		if test -f "$trkfile"; then
+			local reportfile="$tmpdir/$(basename "$trkfile")"
+			cp -f "$trkfile" "$reportfile"
+			if test -z "$parsable"; then
+				echo 'today report:'
+				compact_tags "$reportfile"
+			fi
+			_show_report "$reportfile" "$parsable"
+		else
+			echo "No records for today"
+		fi
 
-    elif [ "$from" = "month" ]; then
-        test -z "$parsable" && echo 'monthly report:'
-        pattern="`date '+%Y-%m-*'`.log"
-        _show_report_from_file_pattern "$pattern" "$verbose" "$parsable"
+	elif [ "$from" = "month" ]; then
+		test -z "$parsable" && echo 'monthly report:'
+		pattern="$(date '+%Y-%m-*').log"
+		_show_report_from_file_pattern "$pattern" "$verbose" "$parsable"
 
-    elif [ "$from" = "lastmonth" ]; then
-        test -z "$parsable" && echo 'last month report:'
-        local pattern="`_get_last_month_date_pattern`.log"
-        _show_report_from_file_pattern "$pattern" "$verbose" "$parsable"
+	elif [ "$from" = "lastmonth" ]; then
+		test -z "$parsable" && echo 'last month report:'
+		local pattern="$(_get_last_month_date_pattern).log"
+		_show_report_from_file_pattern "$pattern" "$verbose" "$parsable"
 
-    elif [ "$from" = "week" ]; then
-        test -z "$parsable" && echo 'weekly report:'
-        today_weekday_number=`date +'%u'`
-        # monday is 1 as documented in man date
-        if test $today_weekday_number -eq 1; then
-            if test -f "$trkfile"; then
-                local reportfile="$tmpdir/`basename "$trkfile"`"
-                cp -f "$trkfile" "$reportfile"
-                if test -z "$parsable"; then
-                    echo 'today report:'
-                    compact_tags "$reportfile"
-                fi
-                _show_report "$reportfile" "$parsable"
-            else
-                echo "No records for today"
-            fi
-        else
-            last_monday_timestamp=`date -d 'last monday' +'%s'`
-            _show_report_from_timestamp_and_offset \
-                $last_monday_timestamp 7 "$verbose" "$parsable"
-        fi
-    elif [ "$from" = "lastweek" ]; then
-        test -z "$parsable" && echo 'lastweek report:'
-        local last_monday_timestamp=`date -d 'last monday' +'%s'`
-        local start_timestamp=$last_monday_timestamp
-        # monday is 1 as documented in man date
-        today_weekday_number=`date +'%u'`
-        if test ! $today_weekday_number -eq 1; then
-            local secs_in_a_day=`expr 3600 \* 24`
-            local secs_in_a_week=`expr $secs_in_a_day \* 7`
-            local start_timestamp=`expr $last_monday_timestamp - $secs_in_a_week`
-        fi
-        _show_report_from_timestamp_and_offset \
-            $start_timestamp 7 "$verbose" "$parsable"
-    fi
+	elif [ "$from" = "week" ]; then
+		test -z "$parsable" && echo 'weekly report:'
+		today_weekday_number=$(date +'%u')
+		# monday is 1 as documented in man date
+		if test $today_weekday_number -eq 1; then
+			if test -f "$trkfile"; then
+				local reportfile="$tmpdir/$(basename "$trkfile")"
+				cp -f "$trkfile" "$reportfile"
+				if test -z "$parsable"; then
+					echo 'today report:'
+					compact_tags "$reportfile"
+				fi
+				_show_report "$reportfile" "$parsable"
+			else
+				echo "No records for today"
+			fi
+		else
+			last_monday_timestamp=$(date -d 'last monday' +'%s')
+			_show_report_from_timestamp_and_offset \
+				$last_monday_timestamp 7 "$verbose" "$parsable"
+		fi
+	elif [ "$from" = "lastweek" ]; then
+		test -z "$parsable" && echo 'lastweek report:'
+		local last_monday_timestamp=$(date -d 'last monday' +'%s')
+		local start_timestamp=$last_monday_timestamp
+		# monday is 1 as documented in man date
+		today_weekday_number=$(date +'%u')
+		if test ! $today_weekday_number -eq 1; then
+			local secs_in_a_day=$(expr 3600 \* 24)
+			local secs_in_a_week=$(expr $secs_in_a_day \* 7)
+			local start_timestamp=$(expr $last_monday_timestamp - $secs_in_a_week)
+		fi
+		_show_report_from_timestamp_and_offset \
+			$start_timestamp 7 "$verbose" "$parsable"
+	fi
 
-    active_entry=`get_active_entry`
-    if test ! -z "$active_entry" && test -z "$parsable"; then
-        echo
-        print_active_entry_info $active_entry
-    fi
+	active_entry=$(get_active_entry)
+	if test ! -z "$active_entry" && test -z "$parsable"; then
+		echo
+		print_active_entry_info $active_entry
+	fi
 }
 
 _show_report_from_file_pattern() {
-    local pattern="$1"
-    local verbose="$2"
-    local parsable="$3"
+	local pattern="$1"
+	local verbose="$2"
+	local parsable="$3"
 
-    if test ! -z "$verbose" || test ! -z "$parsable"; then
-        for f in `ls -1 $trkdir/$pattern`; do
-            if test -z "$parsable"; then
-                echo
-                echo "`basename $f | sed 's/\.log$//'`:"
-                _show_report "$f" "$parsable"
-            else
-                _show_report "$f" "$parsable"
-            fi
-        done
-    fi
-    if test -z "$parsable"; then
-        echo
-        echo '>> totals:'
-        cat $trkdir/$pattern >$reportfile
-        compact_tags "$reportfile"
-        _show_report "$reportfile"
-        test -f "$reportfile" && rm -f "$reportfile"
-    fi
+	if test ! -z "$verbose" || test ! -z "$parsable"; then
+		for f in $(ls -1 $trkdir/$pattern); do
+			if test -z "$parsable"; then
+				echo
+				echo "$(basename $f | sed 's/\.log$//'):"
+				_show_report "$f" "$parsable"
+			else
+				_show_report "$f" "$parsable"
+			fi
+		done
+	fi
+	if test -z "$parsable"; then
+		echo
+		echo '>> totals:'
+		cat $trkdir/$pattern >$reportfile
+		compact_tags "$reportfile"
+		_show_report "$reportfile"
+		test -f "$reportfile" && rm -f "$reportfile"
+	fi
 }
 
 _show_report_from_timestamp_and_offset() {
-    local start_timestamp="$1"
-    local offset_in_days="$2"
-    local verbose="$3"
-    local parsable="$4"
+	local start_timestamp="$1"
+	local offset_in_days="$2"
+	local verbose="$3"
+	local parsable="$4"
 
-    local reportfile="$tmpdir/trkreportfile"
+	local reportfile="$tmpdir/trkreportfile"
 
-    local secs_in_a_day=`expr 3600 \* 24`
-    local counter=$offset_in_days
-    local secs=$start_timestamp
+	local secs_in_a_day=$(expr 3600 \* 24)
+	local counter=$offset_in_days
+	local secs=$start_timestamp
 
-    while test $counter -ne 0; do
-        file_date=`date -d "@$secs" +"$trkfile_date_format"`
-        file="$file_date.log"
-        test -r "$trkdir/$file" && cat $trkdir/$file >>$reportfile
-        if test ! -z "$verbose" || test ! -z "$parsable"; then
-            if test -z "$parsable"; then
-                echo
-                echo "$file_date:"
-                test -r "$trkdir/$file" && _show_report "$trkdir/$file"
-                test -r "$trkdir/$file" || echo 'no tracking'
-            else
-                test -r "$trkdir/$file" && _show_report "$trkdir/$file" "$parsable"
-            fi
-        fi
-        counter=`expr $counter - 1`
-        secs=`expr $secs + $secs_in_a_day`
-    done
-    if test -z "$parsable"; then
-        echo
-        echo '>> totals:'
-        compact_tags "$reportfile"
-        _show_report "$reportfile"
-        test -f "$reportfile" && rm -f "$reportfile"
-    fi
+	while test $counter -ne 0; do
+		file_date=$(date -d "@$secs" +"$trkfile_date_format")
+		file="$file_date.log"
+		test -r "$trkdir/$file" && cat $trkdir/$file >>$reportfile
+		if test ! -z "$verbose" || test ! -z "$parsable"; then
+			if test -z "$parsable"; then
+				echo
+				echo "$file_date:"
+				test -r "$trkdir/$file" && _show_report "$trkdir/$file"
+				test -r "$trkdir/$file" || echo 'no tracking'
+			else
+				test -r "$trkdir/$file" && _show_report "$trkdir/$file" "$parsable"
+			fi
+		fi
+		counter=$(expr $counter - 1)
+		secs=$(expr $secs + $secs_in_a_day)
+	done
+	if test -z "$parsable"; then
+		echo
+		echo '>> totals:'
+		compact_tags "$reportfile"
+		_show_report "$reportfile"
+		test -f "$reportfile" && rm -f "$reportfile"
+	fi
 }
 
 _show_report() {
-    local trkfile_to_report="$1"
-    local parsable="$2"
+	local trkfile_to_report="$1"
+	local parsable="$2"
 
-    total_seconds_spent=0
-    if test -z "$parsable"; then
-        echo
-    fi
-    test -r "$trkfile_to_report" && \
-    while read entry; do
-        log "found entry [$entry]"
-        tag=`echo "$entry" | cut -d ' ' -f 1`
-        time_spent=`echo "$entry" | cut -d ' ' -f 2`
-        notes="`echo -n "$entry" | sed "s/^$tag $time_spent//" | sed 's/^ //'`"
-        log "time_spent [$time_spent]"
-        seconds_spent=`get_seconds_from_friendly_time $time_spent`
-        total_seconds_spent=`expr $total_seconds_spent + $seconds_spent`
-        if test -z "$parsable"; then
-            echo "$time_spent spent on $tag"
-        else
-            echo "`basename $trkfile_to_report | sed 's/\.log$//'` $time_spent $tag $notes"
-        fi
-    done < "$trkfile_to_report"
-    if test -z "$parsable"; then
-        echo
-        tot_friendly_time="`get_friendly_time_from_seconds "$total_seconds_spent"`"
-        echo "[$tot_friendly_time] spent in total"
-    fi
+	total_seconds_spent=0
+	if test -z "$parsable"; then
+		echo
+	fi
+	test -r "$trkfile_to_report" &&
+		while read entry; do
+			log "found entry [$entry]"
+			tag=$(echo "$entry" | cut -d ' ' -f 1)
+			time_spent=$(echo "$entry" | cut -d ' ' -f 2)
+			notes="$(echo -n "$entry" | sed "s/^$tag $time_spent//" | sed 's/^ //')"
+			log "time_spent [$time_spent]"
+			seconds_spent=$(get_seconds_from_friendly_time $time_spent)
+			total_seconds_spent=$(expr $total_seconds_spent + $seconds_spent)
+			if test -z "$parsable"; then
+				echo "$time_spent spent on $tag"
+			else
+				echo "$(basename $trkfile_to_report | sed 's/\.log$//') $time_spent $tag $notes"
+			fi
+		done <"$trkfile_to_report"
+	if test -z "$parsable"; then
+		echo
+		tot_friendly_time="$(get_friendly_time_from_seconds "$total_seconds_spent")"
+		echo "[$tot_friendly_time] spent in total"
+	fi
 }
 
 _get_last_month_date_pattern() {
-    local current_month=`date '+%m'`
-    local current_year=`date '+%Y'`
+	local current_month=$(date '+%m')
+	local current_year=$(date '+%Y')
 
-    if [ $current_month -eq "01" ]; then
-        last_year=`expr $current_year - 1`
-        echo -n "$last_year-12-*"
-        return
-    fi
+	if [ $current_month -eq "01" ]; then
+		last_year=$(expr $current_year - 1)
+		echo -n "$last_year-12-*"
+		return
+	fi
 
-    local last_month=`expr $current_month - 1`
-    if [ $last_month -lt 10 ]; then
-        echo -n "$current_year-0$last_month-*"
-    else
-        echo -n "$current_year-$last_month-*"
-    fi
+	local last_month=$(expr $current_month - 1)
+	if [ $last_month -lt 10 ]; then
+		echo -n "$current_year-0$last_month-*"
+	else
+		echo -n "$current_year-$last_month-*"
+	fi
 }
 
 print_active_entry_info() {
-    local tag="$1"
-    local time="$2"
-    echo "$time spent working on $tag (active entry)"
+	local tag="$1"
+	local time="$2"
+	echo "$time spent working on $tag (active entry)"
 }
 
 ensure_trkdir_is_present
@@ -530,99 +530,98 @@ ensure_trkdir_is_present
 command="$1"
 
 if [ -z "$command" ]; then
-    show_report 'today'
-    echo
-    echo "run [`basename $0` h] for help"
+	show_report 'today'
+	echo
+	echo "run [$(basename $0) h] for help"
 
 elif [ "$command" = "t" ]; then
-    entry_to_start="$2"
-    if test -z "$entry_to_start"; then
-        stop_timer
-        show_report 'today'
-    else
-        start_timer "$entry_to_start"
-    fi
+	entry_to_start="$2"
+	if test -z "$entry_to_start"; then
+		stop_timer
+		show_report 'today'
+	else
+		start_timer "$entry_to_start"
+	fi
 
 elif [ "$command" = "l" ]; then
-    cd $trkdir
-    ls -1 *.log | sed 's/\.log//'
-    cd - >/dev/null
+	cd $trkdir
+	ls -1 *.log | sed 's/\.log//'
+	cd - >/dev/null
 
 elif [ "$command" = "e" ]; then
-    file_name="$2"
-    edit_trkfile $file_name
+	file_name="$2"
+	edit_trkfile $file_name
 
 elif [ "$command" = "s" ]; then
-    query="$2"
-    start_or_partial_date="$3"
-    end_date="$4"
-    show_query_report "$query" "$start_or_partial_date" "$end_date"
+	query="$2"
+	start_or_partial_date="$3"
+	end_date="$4"
+	show_query_report "$query" "$start_or_partial_date" "$end_date"
 
 elif [ "$command" = "r" ]; then
-    timerange="$2"
-    parsable="$3"
-    test -z "$timerange" && timerange="month"
-    show_report $timerange '' $parsable
+	timerange="$2"
+	parsable="$3"
+	test -z "$timerange" && timerange="month"
+	show_report $timerange '' $parsable
 
 elif [ "$command" = "R" ]; then
-    timerange="$2"
-    test -z "$timerange" && timerange="month"
-    show_report "$timerange" 'verbose'
+	timerange="$2"
+	test -z "$timerange" && timerange="month"
+	show_report "$timerange" 'verbose'
 
 elif [ "$command" = "m" ]; then
-    parsable="$2"
-    show_report 'month' '' "$parsable"
+	parsable="$2"
+	show_report 'month' '' "$parsable"
 
 elif [ "$command" = "mm" ]; then
-    parsable="$2"
-    show_report 'lastmonth' '' "$parsable"
+	parsable="$2"
+	show_report 'lastmonth' '' "$parsable"
 
 elif [ "$command" = "M" ]; then
-    show_report 'month' 'verbose'
+	show_report 'month' 'verbose'
 
 elif [ "$command" = "MM" ]; then
-    show_report 'lastmonth' 'verbose'
+	show_report 'lastmonth' 'verbose'
 
 elif [ "$command" = "w" ]; then
-    parsable="$2"
-    show_report 'week' '' "$parsable"
+	parsable="$2"
+	show_report 'week' '' "$parsable"
 
 elif [ "$command" = "ww" ]; then
-    parsable="$2"
-    show_report 'lastweek' '' "$parsable"
+	parsable="$2"
+	show_report 'lastweek' '' "$parsable"
 
 elif [ "$command" = "W" ]; then
-    show_report 'week' 'verbose'
+	show_report 'week' 'verbose'
 
 elif [ "$command" = "WW" ]; then
-    show_report 'lastweek' 'verbose'
+	show_report 'lastweek' 'verbose'
 
 elif [ "$command" = "y" ]; then
-    cd $trkdir
-    git status | grep 'nothing to commit' &>/dev/null
-    test $? = 1 && git add -A && git commit -am 'trk autosync'
-    git pull && git push
+	cd $trkdir
+	git status | grep 'nothing to commit' &>/dev/null
+	test $? = 1 && git add -A && git commit -am 'trk autosync'
+	git pull && git push
 
 elif [ "$command" = "g" ]; then
-    shift 1
-    cd $trkdir
-    git $@
+	shift 1
+	cd $trkdir
+	git $@
 
 elif [ "$command" = "env" ]; then
-    print_env
+	print_env
 
-elif [ "$command" = "--help" ] \
-    || [ "$command" = "-h" ] \
-    || [ "$command" = "help" ] \
-    || [ "$command" = "h" ] ; then
-    echo "$help"
+elif [ "$command" = "--help" ] ||
+	[ "$command" = "-h" ] ||
+	[ "$command" = "help" ] ||
+	[ "$command" = "h" ]; then
+	echo "$help"
 else
-    tag="$command"
-    time_spent="$2"
-    if test ! -z "$tag" && test ! -z "$time_spent"; then
-        shift 2
-        notes="$@"
-    fi
-    add_entry "$tag" "$time_spent" "$notes"
+	tag="$command"
+	time_spent="$2"
+	if test ! -z "$tag" && test ! -z "$time_spent"; then
+		shift 2
+		notes="$@"
+	fi
+	add_entry "$tag" "$time_spent" "$notes"
 fi
-
