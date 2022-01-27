@@ -6,7 +6,9 @@ trkdir="$trkdir_default"
 if [ ! -z "$TRK_DIR" ]; then
 	trkdir="$TRK_DIR"
 fi
-trkfile="$trkdir/$(date +$trkfile_date_format).log"
+trkfile_main="$trkdir/trkfile"
+today=$(date +$trkfile_date_format)
+trkfile="$trkdir/$today.log"
 trk_active_file="$trkdir/active_timer"
 
 trk_workday_hours_default=8
@@ -123,6 +125,21 @@ edit_trkfile() {
 	fi
 }
 
+edit_trkfile_main() {
+	$EDITOR "$trkfile_main"
+}
+
+split_main_trkfile() {
+	rm -f $trkdir/*.log
+	cat $trkfile_main |
+		while read c; do
+			dt=$(echo -n "$c" | awk '{print $1}')
+			entry=$(echo -n "$c" | sed "s/^$dt//")
+			entry=$(echo -n $entry | awk '{print $2 " " $1 " " $3 " " $4 " " $5 " " $6 " " $7 " " $8 " " $9 " " $10 " " $11 " " $12 " " $13 " " $14 " " $15}')
+			echo "$entry" >>"$trkdir/$dt.log"
+		done
+}
+
 get_timestamp() {
 	date '+%s'
 }
@@ -141,9 +158,9 @@ stop_timer() {
 		now=$(get_timestamp)
 		seconds_spent=$(expr $now - $start_ts)
 		humanized_time_spent=$(get_friendly_time_from_seconds "$seconds_spent")
-		echo "$tag $humanized_time_spent" >>"$trkfile"
+		# echo "$tag $humanized_time_spent" >>"$trkfile"
+		echo "$(date '+%Y-%m-%d') $tag $humanized_time_spent" >>"$trkfile_main"
 		echo -n '' >"$trk_active_file"
-		# compact_tags "$trkfile"
 	else
 		echo "no active timer to stop"
 	fi
@@ -249,10 +266,9 @@ add_entry() {
 		exit 1
 	fi
 
-	entry="$tag $time_spent $notes"
+	entry="$today $time_spent $tag $notes"
 	log "adding entry [$entry]"
-	echo "$entry" >>"$trkfile"
-	# compact_tags "$trkfile"
+	echo "$entry" >>"$trkfile_main"
 }
 
 get_unique_tag_list() {
@@ -549,8 +565,13 @@ elif [ "$command" = "l" ]; then
 	cd - >/dev/null
 
 elif [ "$command" = "e" ]; then
-	file_name="$2"
-	edit_trkfile $file_name
+	edit_trkfile_main
+
+elif [ "$command" = "c" ]; then
+	cat $trkfile_main
+
+elif [ "$command" = "p" ]; then
+	split_main_trkfile
 
 elif [ "$command" = "s" ]; then
 	query="$2"
@@ -610,6 +631,11 @@ elif [ "$command" = "g" ]; then
 
 elif [ "$command" = "env" ]; then
 	print_env
+
+elif [ "$command" = "test" ]; then
+	func="$2"
+    shift
+    $func $@
 
 elif [ "$command" = "--help" ] ||
 	[ "$command" = "-h" ] ||
