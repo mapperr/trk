@@ -134,8 +134,9 @@ split_main_trkfile() {
 	cat $trkfile_main |
 		while read c; do
 			dt=$(echo -n "$c" | awk '{print $1}')
+            test -z "$dt" && continue
 			entry=$(echo -n "$c" | sed "s/^$dt//")
-			entry=$(echo -n $entry | awk '{print $2 " " $1 " " $3 " " $4 " " $5 " " $6 " " $7 " " $8 " " $9 " " $10 " " $11 " " $12 " " $13 " " $14 " " $15}')
+			entry=$(echo -n $entry | awk '{print $2 " " $1 " " $3 " " $4 " " $5 " " $6 " " $7 " " $8 " " $9 " " $10 " " $11 " " $12 " " $13 " " $14 " " $15}') # I'm lazy
 			echo "$entry" >>"$trkdir/$dt.log"
 		done
 }
