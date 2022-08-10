@@ -134,7 +134,7 @@ split_main_trkfile() {
 	cat $trkfile_main |
 		while read c; do
 			dt=$(echo -n "$c" | awk '{print $1}')
-            test -z "$dt" && continue
+			test -z "$dt" && continue
 			entry=$(echo -n "$c" | sed "s/^$dt//")
 			entry=$(echo -n $entry | awk '{print $2 " " $1 " " $3 " " $4 " " $5 " " $6 " " $7 " " $8 " " $9 " " $10 " " $11 " " $12 " " $13 " " $14 " " $15}') # I'm lazy
 			echo "$entry" >>"$trkdir/$dt.log"
@@ -542,6 +542,16 @@ print_active_entry_info() {
 	echo "$time spent working on $tag (active entry)"
 }
 
+print_trkfile() {
+	local grep_pattern="$1"
+
+	test -z "$grep_pattern" &&
+		cat $trkfile_main &&
+		return 0
+
+	cat $trkfile_main | grep -i "$grep_pattern"
+}
+
 ensure_trkdir_is_present
 
 command="$1"
@@ -569,7 +579,8 @@ elif [ "$command" = "e" ]; then
 	edit_trkfile_main
 
 elif [ "$command" = "c" ]; then
-	cat $trkfile_main
+	grep_pattern="$2"
+	print_trkfile "$grep_pattern"
 
 elif [ "$command" = "p" ]; then
 	split_main_trkfile
@@ -635,8 +646,8 @@ elif [ "$command" = "env" ]; then
 
 elif [ "$command" = "test" ]; then
 	func="$2"
-    shift
-    $func $@
+	shift
+	$func $@
 
 elif [ "$command" = "--help" ] ||
 	[ "$command" = "-h" ] ||
