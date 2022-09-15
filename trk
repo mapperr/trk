@@ -40,8 +40,6 @@ export trkfile_date_format='$trkfile_date_format'
 
 help="
 Usage:
-    trk
-        shows a 'today' report
     trk t <entry_name>
         starts a timer tracking a named entry
     trk t
@@ -73,13 +71,17 @@ Usage:
         To limit search you can pass a partial date (like 2020 or 2020-03),
         or you can pass a date interval (like 2020-01-01 2020-04-30).
 
+    trk k <entryname_grep_pattern> [date_grep_pattern] [note_grep_pattern] [display_options]
+        show an aggregate of grepped records with totals
+        display_options are: 'e' to show also the list of entries from which totals are computed
+
     trk l
         lists the trk files
     trk e [trk_file]
         edit the trk file directly, defaulting to today trkfile
     trk y
         sync: commits eventual changes and do a pull/push of the trk dir
-    trk g git_args
+    trk (git | g) git_args
         runs git with git_args in the trk dir
     trk env
         prints exports of trk vars,
@@ -552,14 +554,44 @@ print_trkfile() {
 	cat $trkfile_main | grep -i "$grep_pattern"
 }
 
+show_aggregate() {
+    local entryname_grep_pattern="$1"
+	local date_grep_pattern="$2"
+	local note_grep_pattern="$3"
+	local display_options="$4"
+
+    local note_grep_pattern_opt='\s*'"$note_grep_pattern"
+    test -z "$note_grep_pattern" && local note_grep_pattern_opt=''
+
+    local entries=$(print_trkfile "$date_grep_pattern" |
+        grep -i "^[0-9]*-[0-9]*-[0-9]*\s*[0-9½¼¾mqt]*\s*.*$entryname_grep_pattern.*$note_grep_pattern_opt.*")
+
+    if test -z "$entries"; then
+        echo "no entries" >&2
+        return
+    fi
+
+    local hours=$(echo "$entries" | awk '{print $2}' |
+        sed 's/½/.5/' | sed 's/¼/.25/' | sed 's/¾/.75/' |
+        sed 's/m/.5/' | sed 's/q/.25/' | sed 's/t/.75/' |
+        sed 's/^/+ /' | paste -sd ' ' | sed 's/^+/scale=1;/' | bc)
+
+    local days=$(echo "scale=1; $hours / $trk_workday_hours" | bc)
+
+    echo -n "$display_options" | grep -F 'e' >/dev/null &&
+    echo "$entries" && echo
+
+    echo "$hours hours"
+    echo "$days days"
+}
+
+
 ensure_trkdir_is_present
 
 command="$1"
 
 if [ -z "$command" ]; then
-	show_report 'today'
-	echo
-	echo "run [$(basename $0) h] for help"
+    echo "$help"
 
 elif [ "$command" = "t" ]; then
 	entry_to_start="$2"
@@ -630,13 +662,24 @@ elif [ "$command" = "W" ]; then
 elif [ "$command" = "WW" ]; then
 	show_report 'lastweek' 'verbose'
 
+elif [ "$command" = "k" ]; then
+	entryname_grep_pattern="$2"
+	date_grep_pattern="$3"
+	note_grep_pattern="$4"
+	display_opts="$5"
+	show_aggregate \
+        "$entryname_grep_pattern" \
+        "$date_grep_pattern" \
+        "$note_grep_pattern" \
+        "$display_opts"
+
 elif [ "$command" = "y" ]; then
 	cd $trkdir
 	git status | grep 'nothing to commit' &>/dev/null
 	test $? = 1 && git add -A && git commit -am 'trk autosync'
 	git pull && git push
 
-elif [ "$command" = "g" ]; then
+elif [ "$command" = "git" ] || [ "$command" = "g" ]; then
 	shift 1
 	cd $trkdir
 	git $@
@@ -646,7 +689,7 @@ elif [ "$command" = "env" ]; then
 
 elif [ "$command" = "test" ]; then
 	func="$2"
-	shift
+	shift 2
 	$func $@
 
 elif [ "$command" = "--help" ] ||
