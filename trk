@@ -564,7 +564,7 @@ show_aggregate() {
     test -z "$note_grep_pattern" && local note_grep_pattern_opt=''
 
     local entries=$(print_trkfile "$date_grep_pattern" |
-        grep -i "^[0-9]*-[0-9]*-[0-9]*\s*[0-9½¼¾mqt]*\s*.*$entryname_grep_pattern.*$note_grep_pattern_opt.*")
+        grep -i "^[0-9]*-[0-9]*-[0-9]*\s*[0-9\.]*\s*.*$entryname_grep_pattern.*$note_grep_pattern_opt.*")
 
     if test -z "$entries"; then
         echo "no entries" >&2
@@ -572,8 +572,6 @@ show_aggregate() {
     fi
 
     local hours=$(echo "$entries" | awk '{print $2}' |
-        sed 's/½/.5/' | sed 's/¼/.25/' | sed 's/¾/.75/' |
-        sed 's/m/.5/' | sed 's/q/.25/' | sed 's/t/.75/' |
         sed 's/^/+ /' | paste -sd ' ' | sed 's/^+/scale=1;/' | bc)
 
     local days=$(echo "scale=1; $hours / $trk_workday_hours" | bc)
