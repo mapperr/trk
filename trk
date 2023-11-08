@@ -551,7 +551,7 @@ print_trkfile() {
 		cat $trkfile_main &&
 		return 0
 
-	cat $trkfile_main | grep -i "$grep_pattern"
+	cat $trkfile_main | grep -i "$grep_pattern" | grep -v '^#'
 }
 
 show_aggregate() {
