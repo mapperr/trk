@@ -71,7 +71,7 @@ Usage:
         To limit search you can pass a partial date (like 2020 or 2020-03),
         or you can pass a date interval (like 2020-01-01 2020-04-30).
 
-    trk k <entryname_grep_pattern> [date_grep_pattern] [note_grep_pattern] [display_options]
+    trk k [date_grep_pattern] [entryname_grep_pattern] [note_grep_pattern] [display_options]
         show an aggregate of grepped records with totals
         display_options are: 'e' to show also the list of entries from which totals are computed
 
@@ -560,11 +560,18 @@ show_aggregate() {
 	local note_grep_pattern="$3"
 	local display_options="$4"
 
-    local note_grep_pattern_opt='\s*'"$note_grep_pattern"
-    test -z "$note_grep_pattern" && local note_grep_pattern_opt=''
+    test -z "$entryname_grep_pattern" && entryname_grep_pattern='[0-9A-Za-z_\-]*'
+
+    log "date_grep_pattern: $date_grep_pattern"
+    log "entryname_grep_pattern: $entryname_grep_pattern"
+    log "note_grep_pattern: $note_grep_pattern"
+    log "note_grep_pattern_opt: $note_grep_pattern_opt"
+
+    local grep_pattern='^[0-9]*-[0-9]*-[0-9]*\s*[0-9\.]*\s\{1,\}[! .]*'"$entryname_grep_pattern"'[! .]*\s\{1,\}.*'"$note_grep_pattern"'.*'
+    log "grep_pattern: [$grep_pattern]"
 
     local entries=$(print_trkfile "$date_grep_pattern" |
-        grep -i "^[0-9]*-[0-9]*-[0-9]*\s*[0-9\.]*\s*.*$entryname_grep_pattern.*$note_grep_pattern_opt.*")
+        grep -i "$grep_pattern")
 
     if test -z "$entries"; then
         echo "no entries" >&2
@@ -661,8 +668,8 @@ elif [ "$command" = "WW" ]; then
 	show_report 'lastweek' 'verbose'
 
 elif [ "$command" = "k" ]; then
-	entryname_grep_pattern="$2"
-	date_grep_pattern="$3"
+	date_grep_pattern="$2"
+	entryname_grep_pattern="$3"
 	note_grep_pattern="$4"
 	display_opts="$5"
 	show_aggregate \
