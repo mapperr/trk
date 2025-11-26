@@ -1,0 +1,126 @@
+#! /bin/sh
+
+trkfile="${TRK_FILE-$HOME/.trkfile}"
+trk_workday_hours="${TRK_WORKDAY_HOURS-8}"
+editor="${EDITOR-vi}"
+tmpdir="$TMPDIR-/tmp"
+trk_timer_file="$trkfile.timer"
+
+usage() {
+printf '
+Usage:
+    trk t <description>
+        starts a timer for a new entry
+        eventually terminates the previously active timer
+    trk t
+        terminates the current timer
+
+    trk a <date> <hours> <description>
+        adds a new entry to the trk file
+        date is any valid value the date command can take,
+        e.g. "today", "-", "yesterday", etc.
+        hours spent must be a number and can be decimal: 1, 4.25, 0.5, etc.
+
+    trk r
+        shows an aggregate of trk records with totals and statistics
+        can take input from stdin
+
+    trk e
+        edits the trk file with your $EDITOR
+    trk c
+        prints the trk file to stdout
+
+    trk help | h
+        shows help
+
+trkfile:
+    the trk file is a list or trk records one per line.
+    the trk record format is simply:
+    DAY HOURS DESCRIPTION
+    so, for example:
+    2025-01-23 4.5 #billable #client:companyA #project:super_webapp work on backend feature X
+
+tags:
+    descriptions can contain "tags" in the form of #tag or #tagname:tagvalue.
+    those tags will result in the reports as additional aggregates
+
+env vars:
+    - TRK_FILE: the trk file you are working on [default: $HOME/.trkfile]
+    - TRK_WORKDAY_HOURS: workday hours [default: 8]
+    - TRK_DEBUG: set it to whatever value to show debug informations
+'
+}
+_err() { printf "%s: error: %s\n" "$(basename "$0")" "$1" >&2; exit 1; }
+_warn() { printf "%s: warn: %s\n" "$(basename "$0")" "$1" >&2; }
+_info() { printf "%s: %s\n" "$(basename "$0")" "$1" >&2; }
+_dbg() { [ "$TRK_DEBUG" ] && printf "%s: debug: %s\n" "$(basename "$0")" "$1" >&2; return 0; }
+
+_today() { date '+%Y-%m-%d'; }
+_validate_date() { date -d "$(printf "$1")" >/dev/null 2>&1;}
+_validate_hours() { printf "$1" | grep -qE '^[+-]?[0-9]+(\.[0-9]+)?$';}
+_is_timer_active() { [ -f "$trk_timer_file" ]; }
+
+edit_trkfile() { $editor "$trkfile"; }
+
+add_record() {
+    day="$1"
+    hours="$2"
+    [ -z "$3" ] && usage && exit 1
+    shift; shift
+    ! _validate_date "$day" &&
+        _err "date [$day] is not a valid date" && exit 1
+    day="$(date -d "$day" '+%Y-%m-%d')"
+    ! _validate_hours "$hours" &&
+        _err "hours spent [$hours] is not a valid number" && exit 1
+    echo "$day $hours $*" >> "$trkfile"
+    _info "record added: $(tail -n1 "$trkfile")"
+}
+
+_get_timer_hours() {
+    start_ts="$(cat "$trk_timer_file" | cut -d' ' -f1)"
+    now_ts="$(date '+%s')"
+    diff="$(expr $now_ts - $start_ts)"
+    hours="$(awk "BEGIN { print $diff / 3600 }")"
+    hours="$(printf '%.2f\n' "$hours")"
+    printf '%s' "$hours"
+}
+
+start_stop_timer() {
+    _is_timer_active
+    timer_active=$?
+    if [ $timer_active -eq 0 ]; then
+        description="$(cat "$trk_timer_file" | cut -d' ' -f2-)"
+        [ -z "$description" ] &&
+            _warn "this timer has no description, edit it later!" &&
+            description="add a description"
+        hours="$(_get_timer_hours)"
+        if [ "$hours" = "0.00" ]; then _warn "nothing to add, timer lasted less than a minute"
+        else add_record "-" "$hours" "$description"; fi
+        rm -f "$trk_timer_file"
+    fi
+    if [ -n "$1" ]; then echo "$(date '+%s') $*" >"$trk_timer_file"; _info "started new timer: $*"
+    else [ $timer_active -ne 0 ] && _err "add some description to the timer" && return 1; fi
+
+}
+
+report() {
+    if _is_timer_active; then
+        description="$(cat "$trk_timer_file" | cut -d' ' -f2-)"
+        start_ts="$(cat "$trk_timer_file" | cut -d' ' -f1)"
+        echo "timer: working since $(date -d "@$start_ts" '+%Y-%m-%d %H:%M:%S') [$(_get_timer_hours)h] on [$description]"
+    fi
+}
+
+main() {
+    cmd="$1"; shift
+    case $cmd in
+        t) start_stop_timer "$@";;
+        a) add_record "$@";;
+        r) report "$@";;
+        e) edit_trkfile;;
+        c) [ -f "$trkfile" ] && cat "$trkfile";;
+        *) if command -v $scriptname-"$cmd">/dev/null; then $scriptname-"$cmd" "$@"; else usage; exit 0; fi;
+    esac
+}
+scriptname=$(basename $0)
+[ "$1" ] || { usage; exit 0; } && main "$@"
