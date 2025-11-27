@@ -113,11 +113,12 @@ start_stop_timer_notification() {
         _err "missing 'notify-send' command, cannot send notifications" &&
         exit 1
     while true; do
+        sleep $seconds
+        _is_timer_active || continue
         report="$(report)"
         elapsed="$(echo "$report" | grep "^timer_elaps" | cut -d' ' -f2)"
         desc="$(echo "$report" | grep "^timer_descr" | cut -d' ' -f2-)"
         notify-send -a trk -u low -t 4000 "trk timer: $elapsed" "$desc"
-        sleep $seconds
     done
 }
 
