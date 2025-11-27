@@ -109,18 +109,27 @@ start_stop_timer_notification() {
     interval_in_minutes="${1-5}"
     seconds="$(expr $interval_in_minutes \* 60)"
     trap "notify-send -a trk -u low -t 4000 'trk timer' 'timer notification stopped'" EXIT
+    ! command -v notify-send >/dev/null &&
+        _err "missing 'notify-send' command, cannot send notifications" &&
+        exit 1
     while true; do
-        command -v notify-send >/dev/null &&
-            notify-send -a trk -u low -t 4000 'trk timer' "$(report)"
+        report="$(report)"
+        elapsed="$(echo "$report" | grep "^timer_elaps" | cut -d' ' -f2)"
+        desc="$(echo "$report" | grep "^timer_descr" | cut -d' ' -f2-)"
+        notify-send -a trk -u low -t 4000 "trk timer: $elapsed" "$desc"
         sleep $seconds
     done
 }
 
 report() {
     if _is_timer_active; then
-        description="$(cat "$trk_timer_file" | cut -d' ' -f2-)"
         start_ts="$(cat "$trk_timer_file" | cut -d' ' -f1)"
-        echo "timer: working since $(date -d "@$start_ts" '+%Y-%m-%d %H:%M:%S') [$(_get_timer_hours)h] on [$description]"
+        timer_start_date="$(date -d "@$start_ts" '+%Y-%m-%d %H:%M:%S')"
+        timer_elapsed="$(_get_timer_hours)h"
+        timer_description="$(cat "$trk_timer_file" | cut -d' ' -f2-)"
+        echo "timer_start: $timer_start_date"
+        echo "timer_descr: $timer_description"
+        echo "timer_elaps: $timer_elapsed"
     fi
 }
 
