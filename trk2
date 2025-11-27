@@ -62,6 +62,41 @@ _validate_date() { date -d "$(printf "$1")" >/dev/null 2>&1;}
 _validate_hours() { printf "$1" | grep -qE '^[+-]?[0-9]+(\.[0-9]+)?$';}
 _is_timer_active() { [ -f "$trk_timer_file" ]; }
 
+_get_friendly_time_from_hours() {
+    hours_spent="$1"
+
+    seconds_spent="$(awk "BEGIN { print $hours_spent * 3600 }")"
+    seconds_spent="$(printf '%.0f\n' "$seconds_spent")"
+    timeline="${seconds_spent}s"
+    minutes_spent=$(expr $seconds_spent / 60)
+    hours_spent=$(expr $minutes_spent / 60)
+    days_spent=$(expr $hours_spent / $trk_workday_hours)
+
+    if [ $hours_spent -ge $trk_workday_hours ]; then
+        days_in_hours=$(expr $days_spent \* $trk_workday_hours)
+        hours_remainder=$(expr $hours_spent - $days_in_hours)
+        hours_in_minutes=$(expr $hours_spent \* 60)
+        minutes_remainder=$(expr $minutes_spent - $hours_in_minutes)
+        timeline="${days_spent}d"
+        test $hours_remainder -gt 0 &&
+            timeline="${days_spent}d${hours_remainder}h"
+        test $minutes_remainder -gt 0 &&
+            timeline="${days_spent}d${minutes_remainder}m"
+        test $hours_remainder -gt 0 &&
+            test $minutes_remainder -gt 0 &&
+            timeline="${days_spent}d${hours_remainder}h${minutes_remainder}m"
+    elif [ $minutes_spent -ge 60 ]; then
+        hours_in_minutes=$(expr $hours_spent \* 60)
+        minutes_remainder=$(expr $minutes_spent - $hours_in_minutes)
+        timeline="${hours_spent}h"
+        test $minutes_remainder -gt 0 &&
+            timeline="${hours_spent}h${minutes_remainder}m"
+    elif [ $seconds_spent -ge 60 ]; then
+        timeline="${minutes_spent}m"
+    fi
+    echo "$timeline"
+}
+
 edit_trkfile() { $editor "$trkfile"; }
 
 add_record() {
@@ -113,12 +148,12 @@ start_stop_timer_notification() {
         _err "missing 'notify-send' command, cannot send notifications" &&
         exit 1
     while true; do
-        sleep $seconds
-        _is_timer_active || continue
+        _is_timer_active || { sleep $seconds && continue; }
         report="$(report)"
         elapsed="$(echo "$report" | grep "^timer_elaps" | cut -d' ' -f2)"
         desc="$(echo "$report" | grep "^timer_descr" | cut -d' ' -f2-)"
         notify-send -a trk -u low -t 4000 "trk timer: $elapsed" "$desc"
+        sleep $seconds
     done
 }
 
@@ -126,11 +161,13 @@ report() {
     if _is_timer_active; then
         start_ts="$(cat "$trk_timer_file" | cut -d' ' -f1)"
         timer_start_date="$(date -d "@$start_ts" '+%Y-%m-%d %H:%M:%S')"
-        timer_elapsed="$(_get_timer_hours)h"
+        timer_elapsed_hours="$(_get_timer_hours)"
+        timer_elapsed="$(_get_friendly_time_from_hours $timer_elapsed_hours)"
         timer_description="$(cat "$trk_timer_file" | cut -d' ' -f2-)"
         echo "timer_start: $timer_start_date"
         echo "timer_descr: $timer_description"
         echo "timer_elaps: $timer_elapsed"
+        echo
     fi
 }
 
