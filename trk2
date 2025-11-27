@@ -186,22 +186,27 @@ report_timer() {
 report() {
     report_timer
     [ -z "$1" ] && [ ! -t 0 ] && set -- "$(cat)"
+    [ -z "$1" ] && return
     tmpfile="$(_mktemp)"; trap "rm -f $tmpfile" EXIT
     echo "$1">"$tmpfile"
 
-    tags="$(echo "$1" | grep -o '#[0-9a-zA-Z_:]\{1,\} ' | tr -d ' ' | sort | uniq)"
+    _info "building report..."
+    echo
+    tags="$(echo "$1" | grep -o '#[0-9a-zA-Z_:]\{1,\}\b' | sort | uniq)"
     tags_spent="$(echo "$tags" | sed 's/$/=0/')"
+    _dbg "$tags_spent"
     total_hours_sum="0"
     while IFS='\n' read c; do
-        record_tags="$(echo "$c" | grep -o '#[0-9a-zA-Z_:]\{1,\} ' | sort | uniq)"
+        record_tags="$(echo "$c" | grep -o '#[0-9a-zA-Z_:]\{1,\}\b' | sort | uniq)"
         record_date="$(echo "$c" | cut -d' ' -f1)"
         record_hours="$(echo "$c" | cut -d' ' -f2)"
         record_desc="$(echo "$c" | cut -d' ' -f3-)"
         total_hours_sum="${total_hours_sum}+${record_hours}"
         for t in $record_tags; do
-            tag_name="$(echo "$tags_spent" | grep "^$t" | cut -d'=' -f1)"
-            tag_hours="$(echo "$tags_spent" | grep "^$t" | cut -d'=' -f2)"
+            tag_name="$(echo "$tags_spent" | grep "^$t=" | cut -d'=' -f1)"
+            tag_hours="$(echo "$tags_spent" | grep "^$t=" | cut -d'=' -f2)"
             new_tag_hours="$(awk "BEGIN { print $tag_hours + $record_hours }")"
+            _dbg "$t, name: $tag_name, hours: $tag_hours, newhours: $new_tag_hours"
             tags_spent="$(echo "$tags_spent" | sed "s/$tag_name=.*\$/$tag_name=$new_tag_hours/")"
         done
     done <"$tmpfile"
