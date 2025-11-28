@@ -7,7 +7,7 @@ tmpdir="$TMPDIR-/tmp"
 trk_timer_file="$trkfile.timer"
 
 usage() {
-printf '
+    printf '
 Usage:
     trk t <description>
         starts a timer for a new entry
@@ -32,9 +32,14 @@ Usage:
     trk c
         prints the trk file to stdout
 
-    trk help | h
-        shows help
+    trk h
+        shows extended help
 
+'
+}
+helpmsg() {
+    usage
+    printf '
 trkfile:
     the trk file is a list or trk records one per line.
     the trk record format is simply:
@@ -231,6 +236,7 @@ main() {
         r) report "$@";;
         e) edit_trkfile;;
         c) [ -f "$trkfile" ] && cat "$trkfile";;
+        h) helpmsg && exit 0;;
         *) if command -v $scriptname-"$cmd">/dev/null; then $scriptname-"$cmd" "$@"; else usage; exit 0; fi;
     esac
 }
