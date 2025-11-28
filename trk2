@@ -22,8 +22,8 @@ usage() {
         hours spent must be a number and can be decimal: 1, 4.25, 0.5, etc.
 
     trk r [grep_pattern]
-        shows an aggregate of trk records with totals and statistics
-        after eventually grepping records with grep_pattern.
+        shows an aggregate of trk records with per-tag totals,
+        grepping records with grep_pattern if passed.
         by default it reads the trk file, but it can alternatively take input from stdin
 
     trk e
@@ -76,17 +76,14 @@ _today() { date '+%Y-%m-%d'; }
 _validate_date() { date -d "$(printf "$1")" >/dev/null 2>&1;}
 _validate_hours() { printf "$1" | grep -qE '^[+-]?[0-9]+(\.[0-9]+)?$';}
 _is_timer_active() { [ -f "$trk_timer_file" ]; }
-
 _get_friendly_time_from_hours() {
     hours_spent="$1"
-
     seconds_spent="$(awk "BEGIN { print $hours_spent * 3600 }")"
     seconds_spent="$(printf '%.0f\n' "$seconds_spent")"
     timeline="${seconds_spent}s"
     minutes_spent=$(expr $seconds_spent / 60)
     hours_spent=$(expr $minutes_spent / 60)
     days_spent=$(expr $hours_spent / $trk_workday_hours)
-
     if [ $hours_spent -ge $trk_workday_hours ]; then
         days_in_hours=$(expr $days_spent \* $trk_workday_hours)
         hours_remainder=$(expr $hours_spent - $days_in_hours)
@@ -111,9 +108,7 @@ _get_friendly_time_from_hours() {
     fi
     echo "$timeline"
 }
-
 edit_trkfile() { $editor "$trkfile"; }
-
 add_record() {
     day="$1"
     hours="$2"
@@ -127,7 +122,6 @@ add_record() {
     echo "$day $hours ${TRK_TAGS}${TRK_TAGS+ }$*" >> "$trkfile"
     _info "record added: $(tail -n1 "$trkfile")"
 }
-
 _get_timer_hours() {
     start_ts="$(cat "$trk_timer_file" | cut -d' ' -f1)"
     now_ts="$(date '+%s')"
@@ -136,7 +130,6 @@ _get_timer_hours() {
     hours="$(printf '%.2f\n' "$hours")"
     printf '%s' "$hours"
 }
-
 start_stop_timer() {
     _is_timer_active
     timer_active=$?
@@ -154,7 +147,6 @@ start_stop_timer() {
     else [ $timer_active -ne 0 ] && _err "add some description to the timer" && return 1; fi
 
 }
-
 start_stop_timer_notification() {
     interval_in_minutes="${1-5}"
     seconds="$(expr $interval_in_minutes \* 60)"
@@ -171,7 +163,6 @@ start_stop_timer_notification() {
         sleep $seconds
     done
 }
-
 report_timer() {
     ! _is_timer_active && return 0
     start_ts="$(cat "$trk_timer_file" | cut -d' ' -f1)"
@@ -183,19 +174,13 @@ report_timer() {
     echo "timer_descr: $timer_description"
     echo "timer_elaps: $timer_elapsed"
 }
-
-report() {
-    report_timer; echo
-    [ -z "$1" ] && [ ! -t 0 ] && set -- "$(cat)" && _info "building report from stdin"
-    [ -z "$1" ] && return 0
-    [ -n "$1" ] && [ -t 0 ] && set -- "$(cat $trkfile | grep "$1")" && _info "building report for trkfile $trkfile"
-    tmpfile="$(_mktemp)"; trap "rm -f $tmpfile" EXIT
-    echo "$1">"$tmpfile"
-    echo
+report_records() {
+    input_trkfile="$1"
     tags_pattern='#[0-9a-zA-Z_:\-]\{1,\}\b'
-    tags="$(echo "$1" | grep -o "$tags_pattern" | sort | uniq)"
-    tags_spent="$(echo "$tags" | sed 's/$/=0/')"
+    _dbg "tags_pattern: $tags_pattern"
+    tags="$(cat "$input_trkfile" | grep -o "$tags_pattern" | sort | uniq)"
     _dbg "$tags_spent"
+    tmpfile_tags="$(_mktemp)"; trap "rm -f $tmpfile_tags" EXIT
     total_hours_sum="0"
     while IFS='\n' read c; do
         record_tags="$(echo "$c" | grep -o "$tags_pattern" | sort | uniq)"
@@ -203,26 +188,28 @@ report() {
         record_hours="$(echo "$c" | cut -d' ' -f2)"
         record_desc="$(echo "$c" | cut -d' ' -f3-)"
         total_hours_sum="${total_hours_sum}+${record_hours}"
-        for t in $record_tags; do
-            tag_name="$(echo "$tags_spent" | grep "^$t=" | cut -d'=' -f1)"
-            tag_hours="$(echo "$tags_spent" | grep "^$t=" | cut -d'=' -f2)"
-            new_tag_hours="$(awk "BEGIN { print $tag_hours + $record_hours }")"
-            _dbg "$t, name: $tag_name, hours: $tag_hours, newhours: $new_tag_hours"
-            tags_spent="$(echo "$tags_spent" | sed "s/$tag_name=.*\$/$tag_name=$new_tag_hours/")"
-        done
-    done <"$tmpfile"
-    for t in $tags_spent; do
-        tag_name="$(echo "$t" | cut -d'=' -f1)"
-        tag_spent="$(echo "$t" | cut -d'=' -f2)"
+        for t in $record_tags; do echo "$t $record_hours" >>"$tmpfile_tags"; done
+    done <"$input_trkfile"
+    for t in $tags; do
+        tag_spent_sum_string="$(grep "^$t\b" "$tmpfile_tags" | cut -d' ' -f2 | paste -sd+)"
+        tag_spent="$(awk "BEGIN { print $tag_spent_sum_string }")"
         [ -z "$TRK_UNFRIENDLY" ] && tag_spent="$(_get_friendly_time_from_hours "$tag_spent")"
-        echo "tag: $tag_name $tag_spent"
+        echo "tag: $t $tag_spent"
     done
     echo
     total_time_spent="$(awk "BEGIN { print $total_hours_sum }")"
     [ -z "$TRK_UNFRIENDLY" ] && total_time_spent="$(_get_friendly_time_from_hours "$total_time_spent")"
     echo "tot_spent: $total_time_spent"
 }
-
+report() {
+    report_timer; echo
+    [ -z "$1" ] && [ -t 0 ] && return 0
+    tmpfile_report="$(_mktemp)"; trap "rm -f $tmpfile_report" EXIT
+    [ -z "$1" ] && [ ! -t 0 ] && cat >"$tmpfile_report" && _info "building report from stdin"
+    [ -n "$1" ] && [ -t 0 ] && cat $trkfile | grep "$1" >"$tmpfile_report" && _info "building report for trkfile $trkfile"
+    echo
+    report_records "$tmpfile_report"
+}
 main() {
     cmd="$1"; shift
     case $cmd in
