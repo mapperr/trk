@@ -14,51 +14,7 @@ It's a POSIX (-ish), very little, open-source shell script, so you can open it, 
 Usage:
 
 ```
-Usage [v0.4.2]:
-    trk t <description>
-        starts a timer for a new entry
-        eventually terminates the previously active timer
-    trk t
-        terminates the current timer
-    trk tt [notification_interval_in_minutes, default:5]
-        starts a long running process that notifies regurarly if there is an active timer
-
-    trk a <date> <hours> <description>
-        adds a new entry to the trk file.
-        date is any valid value the "date" command can take, e.g. "-", "today", "yesterday", etc.
-        hours spent must be a number and can be decimal: 1, 4.25, 0.5, etc.
-
-    trk r [grep_pattern]
-        shows an aggregate of trk records with per-tag totals,
-        grepping records with grep_pattern if passed.
-        by default it reads the trk file, but it can alternatively take input from stdin
-
-    trk e
-        edits the trk file with your $EDITOR
-    trk c
-        prints the trk file to stdout
-
-    trk h
-        shows extended help
-
-trkfile:
-    the trk file is a list or trk records one per line.
-    the trk record format is simply: DAY HOURS DESCRIPTION (separated by exactly 1 blank space)
-    where: DAY: YYYY-MM-DD, HOURS: a floating point number, DESCRIPTION: a one-line note with optional tags (see below)
-    so, e.g.: "2025-01-23 4.5 #billable #client:companyA #project:super_webapp work on backend feature X"
-
-tags:
-    descriptions can contain "tags" in the form of #tag or #tag:value
-    (tag and value can contain only letters, numbers, undescores "_" and dashes "-", without blank spaces).
-    those tags will result in the reports as additional aggregates or can be used by external integrations.
-
-env vars:
-    - TRK_DEBUG: set it to whatever value to show debug informations
-    - TRK_FILE: the trk file you are working on [default: $HOME/.trkfile]
-    - TRK_WORKDAY_HOURS: workday hours [default: 8]
-    - TRK_UNFRIENDLY: prints spent time in hours with 2 decimals, useful for sorting, parsing, etc.
-    - TRK_TAGS: trk will prepend the content of this var to the record description,
-        useful if, e.g., you are working on a specific client/project all day
+${TRK_USAGE}
 ```
 
 
