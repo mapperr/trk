@@ -1,7 +1,7 @@
 # trk
 
 `trk` is time tracking tool for the modern age:
-shiny graphics, cool animations, touch gestures, cloud-native, k8s-microservices, meme-aware and ubiquitous synchronization.
+shiny graphics, cool animations, touch gestures, cloud-native, k8s-microservices, AI-aware and ubiquitous synchronization.
 
 ...
 
@@ -42,7 +42,7 @@ Usage [v0.4.2]:
         shows extended help
 
 trkfile:
-    the trk file is a list or trk records one per line.
+    the trk file contains a list of trk records, one per line.
     the trk record format is simply: DAY HOURS DESCRIPTION (separated by exactly 1 blank space)
     where: DAY: YYYY-MM-DD, HOURS: a floating point number, DESCRIPTION: a one-line note with optional tags (see below)
     so, e.g.: "2025-01-23 4.5 #billable #client:companyA #project:super_webapp work on backend feature X"
@@ -117,3 +117,6 @@ Also you can:
 
 and other little quirks you can come up with.
 
+## Development
+
+The source is hosted on https://git.sr.ht/~mapperr/trk

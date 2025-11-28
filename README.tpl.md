@@ -73,3 +73,6 @@ Also you can:
 
 and other little quirks you can come up with.
 
+## Development
+
+The source is hosted on https://git.sr.ht/~mapperr/trk
