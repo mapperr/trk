@@ -185,12 +185,10 @@ report_timer() {
 
 report() {
     report_timer
-    [ -z "$1" ] && [ ! -t 0 ] && set -- "$(cat)"
-    [ -z "$1" ] && return
+    [ -z "$1" ] && [ ! -t 0 ] && set -- "$(cat)" && _info "building report from stdin"
+    [ -z "$1" ] && set -- "$(cat $trkfile)" && _info "building report for trkfile $trkfile"
     tmpfile="$(_mktemp)"; trap "rm -f $tmpfile" EXIT
     echo "$1">"$tmpfile"
-
-    _info "building report..."
     echo
     tags="$(echo "$1" | grep -o '#[0-9a-zA-Z_:]\{1,\}\b' | sort | uniq)"
     tags_spent="$(echo "$tags" | sed 's/$/=0/')"
