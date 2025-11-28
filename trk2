@@ -186,7 +186,8 @@ report_timer() {
 report() {
     report_timer
     [ -z "$1" ] && [ ! -t 0 ] && set -- "$(cat)" && _info "building report from stdin"
-    [ -z "$1" ] && set -- "$(cat $trkfile)" && _info "building report for trkfile $trkfile"
+    [ -z "$1" ] && [ -t 0 ] && set -- "$(cat $trkfile)" && _info "building report for trkfile $trkfile"
+    [ -z "$1" ] && return 0
     tmpfile="$(_mktemp)"; trap "rm -f $tmpfile" EXIT
     echo "$1">"$tmpfile"
     echo
