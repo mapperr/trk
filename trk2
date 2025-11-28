@@ -17,9 +17,8 @@ usage() {
         starts a long running process that notifies regurarly if there is an active timer
 
     trk a <date> <hours> <description>
-        adds a new entry to the trk file
-        date is any valid value the date command can take,
-        e.g. "today", "-", "yesterday", etc.
+        adds a new entry to the trk file.
+        date is any valid value the "date" command can take, e.g. "-", "today", "yesterday", etc.
         hours spent must be a number and can be decimal: 1, 4.25, 0.5, etc.
 
     trk r
