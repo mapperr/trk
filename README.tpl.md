@@ -1,7 +1,7 @@
 # trk
 
 `trk` is time tracking tool for the modern age:
-shiny graphics, cool animations, touch gestures, cloud-native, k8s-microservices, meme-aware and ubiquitous synchronization.
+shiny graphics, cool animations, touch gestures, cloud-native, k8s-microservices, AI-aware and ubiquitous synchronization.
 
 ...
 
