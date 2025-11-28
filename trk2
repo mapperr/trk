@@ -1,5 +1,5 @@
 #! /bin/sh
-
+version="0.1.2"
 trkfile="${TRK_FILE-$HOME/.trkfile}"
 trk_workday_hours="${TRK_WORKDAY_HOURS-8}"
 editor="${EDITOR-vi}"
@@ -7,14 +7,13 @@ tmpdir="$TMPDIR-/tmp"
 trk_timer_file="$trkfile.timer"
 
 usage() {
-    printf '
-Usage:
+    printf 'Usage:
     trk t <description>
         starts a timer for a new entry
         eventually terminates the previously active timer
     trk t
         terminates the current timer
-    trk tt [notification_interval_in_minutes-default:5]
+    trk tt [notification_interval_in_minutes, default:5]
         starts a long running process that notifies regurarly if there is an active timer
 
     trk a <date> <hours> <description>
@@ -33,23 +32,20 @@ Usage:
         prints the trk file to stdout
 
     trk h
-        shows extended help
-
-'
+        shows extended help'; echo
 }
 helpmsg() {
-    usage
-    printf '
-trkfile:
+    usage; echo
+    printf 'trkfile:
     the trk file is a list or trk records one per line.
-    the trk record format is simply:
-    DAY HOURS DESCRIPTION
-    so, for example:
-    2025-01-23 4.5 #billable #client:companyA #project:super_webapp work on backend feature X
+    the trk record format is simply: DAY HOURS DESCRIPTION (separated by exactly 1 blank space)
+    where: DAY: YYYY-MM-DD, HOURS: a floating point number, DESCRIPTION: a one-line note with optional tags (see below)
+    so, e.g.: "2025-01-23 4.5 #billable #client:companyA #project:super_webapp work on backend feature X"
 
 tags:
-    descriptions can contain "tags" in the form of #tag or #tagname:tagvalue.
-    those tags will result in the reports as additional aggregates
+    descriptions can contain "tags" in the form of #tag or #tag:value
+    (tag and value can contain only letters, numbers, and the undescore "_", without blank spaces).
+    those tags will result in the reports as additional aggregates or can be used by external integrations.
 
 env vars:
     - TRK_DEBUG: set it to whatever value to show debug informations
