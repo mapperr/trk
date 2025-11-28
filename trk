@@ -1,60 +1,64 @@
 #! /bin/sh
 version="0.4.2"
-trkfile="${TRK_FILE-$HOME/.trkfile}"
-trk_workday_hours="${TRK_WORKDAY_HOURS-8}"
-editor="${EDITOR-vi}"
-tmpdir="$TMPDIR-/tmp"
+trkfile="${TRK_FILE:-$HOME/.trkfile}"
+trk_workday_hours="${TRK_WORKDAY_HOURS:-8}"
+editor="${EDITOR:-vi}"
+tmpdir="$TMPDIR:-/tmp"
 trk_timer_file="$trkfile.timer"
 
 usage() {
-    printf 'Usage [v%s]:
-    trk t <description>
+    s="$(basename $0)"
+    printf "Usage [v$version]:
+    $s t <description>
         starts a timer for a new entry
         eventually terminates the previously active timer
-    trk t
+    $s t
         terminates the current timer
-    trk tt [notification_interval_in_minutes, default:5]
+    $s tt [notification_interval_in_minutes, default:5]
         starts a long running process that notifies regurarly if there is an active timer
 
-    trk a <date> <hours> <description>
+    $s a <date> <hours> <description>
         adds a new entry to the trk file.
-        date is any valid value the "date" command can take, e.g. "-", "today", "yesterday", etc.
+        date is any valid value the 'date' command can take, e.g. '-', 'today', 'yesterday', etc.
         hours spent must be a number and can be decimal: 1, 4.25, 0.5, etc.
 
-    trk r [grep_pattern]
+    $s r [grep_pattern]
         shows an aggregate of trk records with per-tag totals,
         grepping records with grep_pattern if passed.
         by default it reads the trk file, but it can alternatively take input from stdin
 
-    trk e
+    $s e
         edits the trk file with your $EDITOR
-    trk c
+    $s c
         prints the trk file to stdout
 
-    trk h
-        shows extended help' "$version"; echo
+    $s g [git cmds/args]
+        executes git commands in the trk file directory
+    $s h
+        shows extended help
+"
 }
 helpmsg() {
     usage; echo
-    printf 'trkfile:
+    printf "trkfile:
     the trk file contains a list of trk records, one per line.
     the trk record format is simply: DAY HOURS DESCRIPTION (separated by exactly 1 blank space)
     where: DAY: YYYY-MM-DD, HOURS: a floating point number, DESCRIPTION: a one-line note with optional tags (see below)
-    so, e.g.: "2025-01-23 4.5 #billable #client:companyA #project:super_webapp work on backend feature X"
+    so, e.g.: '2025-01-23 4.5 #billable #client:companyA #project:super_webapp work on backend feature X'
 
 tags:
-    descriptions can contain "tags" in the form of #tag or #tag:value
-    (tag and value can contain only letters, numbers, undescores "_" and dashes "-", without blank spaces).
+    descriptions can contain 'tags' in the form of #tag or #tag:value
+    (tag and value can contain only letters, numbers, undescores '_' and dashes '-', without blank spaces).
     those tags will result in the reports as additional aggregates or can be used by external integrations.
 
 env vars:
-    - TRK_DEBUG: set it to whatever value to show debug informations
-    - TRK_FILE: the trk file you are working on [default: $HOME/.trkfile]
-    - TRK_WORKDAY_HOURS: workday hours [default: 8]
-    - TRK_UNFRIENDLY: prints spent time in hours with 2 decimals, useful for sorting, parsing, etc.
+    - TRK_DEBUG: set it to whatever value to show debug informations [default: unset, cur: ${TRK_DEBUG-unset}]
+    - TRK_FILE: the trk file you are working on [default: $HOME/.trkfile, cur: $trkfile]
+    - TRK_WORKDAY_HOURS: workday hours [default: 8, cur: $trk_workday_hours]
+    - TRK_UNFRIENDLY: prints spent time in hours with 2 decimals, useful for sorting, parsing, etc. [default: unset, cur: ${TRK_UNFRIENDLY-unset}]
     - TRK_TAGS: trk will prepend the content of this var to the record description,
-        useful if, e.g., you are working on a specific client/project all day
-'
+        useful if, e.g., you are working on a specific client/project all day [default: unset, cur: ${TRK_TAGS-unset}]
+"
 }
 _err() { printf "%s: error: %s\n" "$(basename "$0")" "$1" >&2; exit 1; }
 _warn() { printf "%s: warn: %s\n" "$(basename "$0")" "$1" >&2; }
@@ -220,6 +224,7 @@ main() {
         e) edit_trkfile;;
         c) [ -f "$trkfile" ] && cat "$trkfile" | grep -v '^#';;
         h) helpmsg && exit 0;;
+        g) cd "$(dirname "$trkfile")" && git "$@";;
         *) if command -v $scriptname-"$cmd">/dev/null; then $scriptname-"$cmd" "$@"; else usage; exit 0; fi;
     esac
 }

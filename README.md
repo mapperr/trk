@@ -25,7 +25,7 @@ Usage [v0.4.2]:
 
     trk a <date> <hours> <description>
         adds a new entry to the trk file.
-        date is any valid value the "date" command can take, e.g. "-", "today", "yesterday", etc.
+        date is any valid value the 'date' command can take, e.g. '-', 'today', 'yesterday', etc.
         hours spent must be a number and can be decimal: 1, 4.25, 0.5, etc.
 
     trk r [grep_pattern]
@@ -34,10 +34,12 @@ Usage [v0.4.2]:
         by default it reads the trk file, but it can alternatively take input from stdin
 
     trk e
-        edits the trk file with your $EDITOR
+        edits the trk file with your vis
     trk c
         prints the trk file to stdout
 
+    trk g [git cmds/args]
+        executes git commands in the trk file directory
     trk h
         shows extended help
 
@@ -45,20 +47,20 @@ trkfile:
     the trk file contains a list of trk records, one per line.
     the trk record format is simply: DAY HOURS DESCRIPTION (separated by exactly 1 blank space)
     where: DAY: YYYY-MM-DD, HOURS: a floating point number, DESCRIPTION: a one-line note with optional tags (see below)
-    so, e.g.: "2025-01-23 4.5 #billable #client:companyA #project:super_webapp work on backend feature X"
+    so, e.g.: '2025-01-23 4.5 #billable #client:companyA #project:super_webapp work on backend feature X'
 
 tags:
-    descriptions can contain "tags" in the form of #tag or #tag:value
-    (tag and value can contain only letters, numbers, undescores "_" and dashes "-", without blank spaces).
+    descriptions can contain 'tags' in the form of #tag or #tag:value
+    (tag and value can contain only letters, numbers, undescores '_' and dashes '-', without blank spaces).
     those tags will result in the reports as additional aggregates or can be used by external integrations.
 
 env vars:
-    - TRK_DEBUG: set it to whatever value to show debug informations
-    - TRK_FILE: the trk file you are working on [default: $HOME/.trkfile]
-    - TRK_WORKDAY_HOURS: workday hours [default: 8]
-    - TRK_UNFRIENDLY: prints spent time in hours with 2 decimals, useful for sorting, parsing, etc.
+    - TRK_DEBUG: set it to whatever value to show debug informations [default: unset, cur: ]
+    - TRK_FILE: the trk file you are working on [default: /home/mapperr/.trkfile, cur: /home/mapperr/.trkfile]
+    - TRK_WORKDAY_HOURS: workday hours [default: 8, cur: 8]
+    - TRK_UNFRIENDLY: prints spent time in hours with 2 decimals, useful for sorting, parsing, etc. [default: unset, cur: unset]
     - TRK_TAGS: trk will prepend the content of this var to the record description,
-        useful if, e.g., you are working on a specific client/project all day
+        useful if, e.g., you are working on a specific client/project all day [default: unset, cur: unset]
 ```
 
 
