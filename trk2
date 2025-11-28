@@ -43,7 +43,7 @@ helpmsg() {
 
 tags:
     descriptions can contain "tags" in the form of #tag or #tag:value
-    (tag and value can contain only letters, numbers, and the undescore "_", without blank spaces).
+    (tag and value can contain only letters, numbers, undescores "_" and dashes "-", without blank spaces).
     those tags will result in the reports as additional aggregates or can be used by external integrations.
 
 env vars:
@@ -191,12 +191,13 @@ report() {
     tmpfile="$(_mktemp)"; trap "rm -f $tmpfile" EXIT
     echo "$1">"$tmpfile"
     echo
-    tags="$(echo "$1" | grep -o '#[0-9a-zA-Z_:]\{1,\}\b' | sort | uniq)"
+    tags_pattern='#[0-9a-zA-Z_:\-]\{1,\}\b'
+    tags="$(echo "$1" | grep -o "$tags_pattern" | sort | uniq)"
     tags_spent="$(echo "$tags" | sed 's/$/=0/')"
     _dbg "$tags_spent"
     total_hours_sum="0"
     while IFS='\n' read c; do
-        record_tags="$(echo "$c" | grep -o '#[0-9a-zA-Z_:]\{1,\}\b' | sort | uniq)"
+        record_tags="$(echo "$c" | grep -o "$tags_pattern" | sort | uniq)"
         record_date="$(echo "$c" | cut -d' ' -f1)"
         record_hours="$(echo "$c" | cut -d' ' -f2)"
         record_desc="$(echo "$c" | cut -d' ' -f3-)"
