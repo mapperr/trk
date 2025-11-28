@@ -21,9 +21,10 @@ usage() {
         date is any valid value the "date" command can take, e.g. "-", "today", "yesterday", etc.
         hours spent must be a number and can be decimal: 1, 4.25, 0.5, etc.
 
-    trk r
+    trk r [grep_pattern]
         shows an aggregate of trk records with totals and statistics
-        can take input from stdin
+        after eventually grepping records with grep_pattern.
+        by default it reads the trk file, but it can alternatively take input from stdin
 
     trk e
         edits the trk file with your $EDITOR
@@ -163,7 +164,7 @@ start_stop_timer_notification() {
         exit 1
     while true; do
         _is_timer_active || { sleep $seconds && continue; }
-        report="$(report)"
+        report="$(report_timer)"
         elapsed="$(echo "$report" | grep "^timer_elaps" | cut -d' ' -f2)"
         desc="$(echo "$report" | grep "^timer_descr" | cut -d' ' -f2-)"
         notify-send -a trk -u low -t 4000 "trk timer: $elapsed" "$desc"
@@ -176,7 +177,7 @@ report_timer() {
     start_ts="$(cat "$trk_timer_file" | cut -d' ' -f1)"
     timer_start_date="$(date -d "@$start_ts" '+%Y-%m-%d %H:%M:%S')"
     timer_elapsed="$(_get_timer_hours)"
-    [ -z "$TRK_UNFRIENDLY" ] && timer_elapsed="$(_get_friendly_time_from_hours $timer_elapsed_hours)"
+    [ -z "$TRK_UNFRIENDLY" ] && timer_elapsed="$(_get_friendly_time_from_hours "$timer_elapsed")"
     timer_description="$(cat "$trk_timer_file" | cut -d' ' -f2-)"
     echo "timer_start: $timer_start_date"
     echo "timer_descr: $timer_description"
@@ -184,10 +185,10 @@ report_timer() {
 }
 
 report() {
-    report_timer
+    report_timer; echo
     [ -z "$1" ] && [ ! -t 0 ] && set -- "$(cat)" && _info "building report from stdin"
-    [ -z "$1" ] && [ -t 0 ] && set -- "$(cat $trkfile)" && _info "building report for trkfile $trkfile"
     [ -z "$1" ] && return 0
+    [ -n "$1" ] && [ -t 0 ] && set -- "$(cat $trkfile | grep "$1")" && _info "building report for trkfile $trkfile"
     tmpfile="$(_mktemp)"; trap "rm -f $tmpfile" EXIT
     echo "$1">"$tmpfile"
     echo
