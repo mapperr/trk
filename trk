@@ -37,7 +37,7 @@ usage() {
 helpmsg() {
     usage; echo
     printf 'trkfile:
-    the trk file is a list or trk records one per line.
+    the trk file contains a list of trk records, one per line.
     the trk record format is simply: DAY HOURS DESCRIPTION (separated by exactly 1 blank space)
     where: DAY: YYYY-MM-DD, HOURS: a floating point number, DESCRIPTION: a one-line note with optional tags (see below)
     so, e.g.: "2025-01-23 4.5 #billable #client:companyA #project:super_webapp work on backend feature X"
