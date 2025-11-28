@@ -202,12 +202,12 @@ report_records() {
     echo "tot_spent: $total_time_spent"
 }
 report() {
-    report_timer; echo
+    report_timer
     [ -z "$1" ] && [ -t 0 ] && return 0
     tmpfile_report="$(_mktemp)"; trap "rm -f $tmpfile_report" EXIT
     [ -z "$1" ] && [ ! -t 0 ] && cat >"$tmpfile_report" && _info "building report from stdin"
     [ -n "$1" ] && [ -t 0 ] && cat $trkfile | grep "$1" >"$tmpfile_report" && _info "building report for trkfile $trkfile"
-    echo
+    echo; echo
     report_records "$tmpfile_report"
 }
 main() {
@@ -218,7 +218,7 @@ main() {
         a) add_record "$@";;
         r) report "$@";;
         e) edit_trkfile;;
-        c) [ -f "$trkfile" ] && cat "$trkfile";;
+        c) [ -f "$trkfile" ] && cat "$trkfile" | grep -v '^#';;
         h) helpmsg && exit 0;;
         *) if command -v $scriptname-"$cmd">/dev/null; then $scriptname-"$cmd" "$@"; else usage; exit 0; fi;
     esac
