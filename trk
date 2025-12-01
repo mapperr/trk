@@ -154,14 +154,16 @@ start_stop_timer() {
 }
 start_timer_notification() {
     interval_in_minutes="${1-5}"
-    check_frequency_in_seconds=50
     trap "notify-send -a trk -u low -t 4000 'trk timer' 'timer notification stopped'" EXIT
     ! command -v notify-send >/dev/null &&
         _err "missing 'notify-send' command, cannot send notifications" &&
         exit 1; _dbg "notification interval set to $interval_in_minutes minutes"
+    ts_lastcheck="$(date '+%s')"
     while true; do
-        _dbg "waiting $check_frequency_in_seconds seconds"
-        sleep "$check_frequency_in_seconds"
+        _dbg "waiting a minute"
+        ts_check="$ts_lastcheck"
+        while [ "$(expr $ts_check - $ts_lastcheck)" -le 60 ]; do sleep 1; ts_check="$(date '+%s')"; done 
+        ts_lastcheck="$(date '+%s')"
         _is_timer_active || continue
         timer_elapsed="$(_get_timer_hours)"
         elapsed_minutes="$(_get_rounded_seconds_from_hours "$timer_elapsed" | xargs -I% expr % / 60 )"
