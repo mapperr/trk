@@ -14,7 +14,7 @@ It's a POSIX (-ish), very little, open-source shell script, so you can open it, 
 Usage:
 
 ```
-Usage [v0.4.2]:
+Usage [v0.5.0]:
     trk t <description>
         starts a timer for a new entry
         eventually terminates the previously active timer

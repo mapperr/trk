@@ -1,5 +1,5 @@
 #! /bin/sh
-version="0.4.2"
+version="0.5.0"
 trkfile="${TRK_FILE:-$HOME/.trkfile}"
 trk_workday_hours="${TRK_WORKDAY_HOURS:-8}"
 editor="${EDITOR:-vi}"
@@ -189,7 +189,6 @@ report_records() {
     tags_pattern='#[0-9a-zA-Z_:\-]\{1,\}\b'
     _dbg "tags_pattern: $tags_pattern"
     tags="$(cat "$input_trkfile" | grep -o "$tags_pattern" | sort | uniq)"
-    _dbg "$tags_spent"
     tmpfile_tags="$(_mktemp)"; trap "rm -f $tmpfile_tags" EXIT
     total_hours_sum="0"
     while IFS='\n' read c; do
