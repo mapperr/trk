@@ -179,13 +179,10 @@ start_timer_notification() {
 report_timer() {
     ! _is_timer_active && return 0
     start_ts="$(cat "$trk_timer_file" | cut -d' ' -f1)"
-    timer_start_date="$(date -d "@$start_ts" '+%Y-%m-%d %H:%M:%S')"
     timer_elapsed="$(_get_timer_hours)"
     [ -z "$TRK_UNFRIENDLY" ] && timer_elapsed="$(_get_friendly_time_from_hours "$timer_elapsed")"
     timer_description="$(cat "$trk_timer_file" | cut -d' ' -f2-)"
-    echo "timer_start: $timer_start_date"
-    echo "timer_descr: $timer_description"
-    echo "timer_elaps: $timer_elapsed"
+    echo "timer: $timer_elapsed $timer_description"
 }
 report_records() {
     input_trkfile="$1"
