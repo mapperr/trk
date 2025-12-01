@@ -147,7 +147,7 @@ start_stop_timer() {
         else add_record "-" "$hours" "$description"; fi
         rm -f "$trk_timer_file"
     fi
-    if [ -n "$1" ]; then echo "$(date '+%s') $*" >"$trk_timer_file"
+    if [ -n "$1" ]; then echo "$(date '+%s') ${TRK_TAGS}${TRK_TAGS+ }$*" >"$trk_timer_file"
         _info "started new timer: ${TRK_TAGS}${TRK_TAGS+ }$*"
     else [ $timer_active -ne 0 ] && _err "add some description to the timer" && return 1; fi
 
