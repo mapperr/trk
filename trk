@@ -80,10 +80,10 @@ _today() { date '+%Y-%m-%d'; }
 _validate_date() { date -d "$(printf "$1")" >/dev/null 2>&1;}
 _validate_hours() { printf "$1" | grep -qE '^[+-]?[0-9]+(\.[0-9]+)?$';}
 _is_timer_active() { [ -f "$trk_timer_file" ]; }
+_get_rounded_seconds_from_hours() { awk "BEGIN { print $1 * 3600 }" | xargs printf '%.0f\n'; }
 _get_friendly_time_from_hours() {
     hours_spent="$1"
-    seconds_spent="$(awk "BEGIN { print $hours_spent * 3600 }")"
-    seconds_spent="$(printf '%.0f\n' "$seconds_spent")"
+    seconds_spent="$(_get_rounded_seconds_from_hours "$hours_spent")"
     timeline="${seconds_spent}s"
     minutes_spent=$(expr $seconds_spent / 60)
     hours_spent=$(expr $minutes_spent / 60)
@@ -154,18 +154,20 @@ start_stop_timer() {
 }
 start_timer_notification() {
     interval_in_minutes="${1-5}"
-    seconds="$(expr $interval_in_minutes \* 60)"
+    check_frequency_in_seconds=60
     trap "notify-send -a trk -u low -t 4000 'trk timer' 'timer notification stopped'" EXIT
     ! command -v notify-send >/dev/null &&
         _err "missing 'notify-send' command, cannot send notifications" &&
         exit 1
     while true; do
-        _is_timer_active || { sleep $seconds && continue; }
-        report="$(report_timer)"
-        elapsed="$(echo "$report" | grep "^timer_elaps" | cut -d' ' -f2)"
-        desc="$(echo "$report" | grep "^timer_descr" | cut -d' ' -f2-)"
-        notify-send -a trk -u low -t 4000 "trk timer: $elapsed" "$desc"
-        sleep $seconds
+        sleep "$check_frequency_in_seconds"
+        _is_timer_active || continue
+        timer_elapsed="$(_get_timer_hours)"
+        elapsed_minutes="$(_get_rounded_seconds_from_hours "$timer_elapsed" | xargs -I% expr % / 60 )"
+        [ "$(expr "$elapsed_minutes" % "$interval_in_minutes")" -ne 0 ] && continue
+        [ -z "$TRK_UNFRIENDLY" ] && timer_elapsed="$(_get_friendly_time_from_hours "$timer_elapsed")"
+        description="$(cat "$trk_timer_file" | cut -d' ' -f2-)"
+        notify-send -a trk -u low -t 4000 "trk timer: $timer_elapsed" "$description"
     done
 }
 report_timer() {
