@@ -39,7 +39,7 @@ Usage [v0.4.2]:
         prints the trk file to stdout
 
     trk g [git cmds/args]
-        executes git commands in the trk file directory
+        executes git commands in the trk file directory, e.g.: trk g pull
     trk h
         shows extended help
 
@@ -55,8 +55,8 @@ tags:
     those tags will result in the reports as additional aggregates or can be used by external integrations.
 
 env vars:
-    - TRK_DEBUG: set it to whatever value to show debug informations [default: unset, cur: ]
-    - TRK_FILE: the trk file you are working on [default: /home/mapperr/.trkfile, cur: /home/mapperr/.trkfile]
+    - TRK_DEBUG: set it to whatever value to show debug informations [default: unset, cur: unset]
+    - TRK_FILE: the trk file you are working on [default: /home/mapperr/.trkfile, cur: /home/mapperr/src/git.sr.ht/~mapperr/timetracking/trkfile]
     - TRK_WORKDAY_HOURS: workday hours [default: 8, cur: 8]
     - TRK_UNFRIENDLY: prints spent time in hours with 2 decimals, useful for sorting, parsing, etc. [default: unset, cur: unset]
     - TRK_TAGS: trk will prepend the content of this var to the record description,

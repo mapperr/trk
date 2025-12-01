@@ -33,7 +33,7 @@ usage() {
         prints the trk file to stdout
 
     $s g [git cmds/args]
-        executes git commands in the trk file directory
+        executes git commands in the trk file directory, e.g.: trk g pull
     $s h
         shows extended help
 "
@@ -147,11 +147,12 @@ start_stop_timer() {
         else add_record "-" "$hours" "$description"; fi
         rm -f "$trk_timer_file"
     fi
-    if [ -n "$1" ]; then echo "$(date '+%s') $*" >"$trk_timer_file"; _info "started new timer: $*"
+    if [ -n "$1" ]; then echo "$(date '+%s') $*" >"$trk_timer_file"
+        _info "started new timer: ${TRK_TAGS}${TRK_TAGS+ }$*"
     else [ $timer_active -ne 0 ] && _err "add some description to the timer" && return 1; fi
 
 }
-start_stop_timer_notification() {
+start_timer_notification() {
     interval_in_minutes="${1-5}"
     seconds="$(expr $interval_in_minutes \* 60)"
     trap "notify-send -a trk -u low -t 4000 'trk timer' 'timer notification stopped'" EXIT
@@ -218,7 +219,7 @@ main() {
     cmd="$1"; shift
     case $cmd in
         t) start_stop_timer "$@";;
-        tt) start_stop_timer_notification "$@";;
+        tt) start_timer_notification "$@";;
         a) add_record "$@";;
         r) report "$@";;
         e) edit_trkfile;;
