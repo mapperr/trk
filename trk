@@ -34,6 +34,8 @@ usage() {
 
     $s g [git cmds/args]
         executes git commands in the trk file directory, e.g.: trk g pull
+    $s y [commit msg]
+        executes git add, commit -m 'commit msg' (or 'sync'), pull and push in the tsk directory
     $s h
         shows extended help
 "
@@ -215,6 +217,7 @@ report() {
     [ -z "$1" ] && [ -t 0 ] && return 0
     tmpfile_report="$(_mktemp)"; trap "rm -f $tmpfile_report" EXIT
     [ -z "$1" ] && [ ! -t 0 ] && cat >"$tmpfile_report" && _info "building report from stdin"
+    _validate_date "$*" && set -- "^$(date -d "$*" "+%Y-%m-%d")"
     [ -n "$1" ] && [ -t 0 ] && cat $trkfile | grep "$1" >"$tmpfile_report" && _info "building report for trkfile $trkfile"
     echo
     report_records "$tmpfile_report"
@@ -230,6 +233,8 @@ main() {
         c) [ -f "$trkfile" ] && cat "$trkfile" | grep -v '^#';;
         h) helpmsg && exit 0;;
         g) cd "$(dirname "$trkfile")" && git "$@";;
+        y) cd "$(dirname "$trkfile")" && git add -A && git commit -m "${*:-sync}" && git pull && git push;;
+        run) "$@";;
         *) if command -v $scriptname-"$cmd">/dev/null; then $scriptname-"$cmd" "$@"; else usage; exit 0; fi;
     esac
 }
