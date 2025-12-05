@@ -17,20 +17,22 @@ usage() {
     $s tt [notification_interval_in_minutes, default:5]
         starts a long running process that notifies regurarly if there is an active timer
 
-    $s a <date> <hours> <description>
+    $s a <date_arg> <hours> <description>
         adds a new entry to the trk file.
-        date is any valid value the 'date' command can take, e.g. '-', 'today', 'yesterday', etc.
+        date_arg is any valid value the 'date' command can take, e.g. '-', 'today', 'yesterday', etc.
         hours spent must be a number and can be decimal: 1, 4.25, 0.5, etc.
 
-    $s r [grep_pattern]
+    $s l [grep_pattern | date_arg]
+        prints trk records to stdout, filtering records with grep_pattern or a date_arg if passed.
+        by default it reads the trk file, but it can alternatively take input from stdin
+
+    $s r [grep_pattern | date_arg]
         shows an aggregate of trk records with per-tag totals,
-        grepping records with grep_pattern if passed.
+        filtering records with grep_pattern or a date_arg if passed.
         by default it reads the trk file, but it can alternatively take input from stdin
 
     $s e
         edits the trk file with your $EDITOR
-    $s c
-        prints the trk file to stdout
 
     $s g [git cmds/args]
         executes git commands in the trk file directory, e.g.: trk g pull
@@ -53,6 +55,12 @@ tags:
     (tag and value can contain only letters, numbers, undescores '_' and dashes '-', without blank spaces).
     those tags will result in the reports as additional aggregates or can be used by external integrations.
 
+filtering:
+    the l[ist] and r[eport] commands optionally take a grep pattern or a date arg as input.
+    the grep pattern is obviously grep-compatible a regex.
+    The date arg is a value that is a valid 'date' command specification: something like yesterday, 7 days ago, etc. 
+    $s tries to be smart, e.g.: if the date arg contains 'month', then it adjust the resulting filter to grep the entire month.
+    
 env vars:
     - TRK_DEBUG: set it to whatever value to show debug informations [default: unset, cur: ${TRK_DEBUG-unset}]
     - TRK_FILE: the trk file you are working on [default: $HOME/.trkfile, cur: $trkfile]
@@ -178,6 +186,17 @@ start_timer_notification() {
         notify-send -a trk -u low -t 4000 "trk timer: $timer_elapsed" "$description"
     done
 }
+list_records() {
+    [ -z "$1" ] && [ -t 0 ] && cat "$trkfile" | grep -v '^#' && return 0
+    [ -z "$1" ] && [ ! -t 0 ] && cat | grep -v '^#' && return 0
+    _dbg "list args input: $*"
+    if _validate_date "$*"; then echo "$*" | grep month>/dev/null &&
+        set -- "^$(date -d "$*" "+%Y-%m")" ||
+        set -- "^$(date -d "$*" "+%Y-%m-%d")"; fi
+    _dbg "list args input: $*"
+    [ -n "$1" ] && [ -t 0 ] && cat "$trkfile" | grep -v '^#' | grep "$*" && return 0
+    [ -n "$1" ] && [ ! -t 0 ] && cat | grep -v '^#' | grep "$*" && return 0
+}
 report_timer() {
     ! _is_timer_active && return 0
     start_ts="$(cat "$trk_timer_file" | cut -d' ' -f1)"
@@ -188,6 +207,8 @@ report_timer() {
 }
 report_records() {
     input_trkfile="$1"
+    ! [ -f "$input_trkfile" ] && _warn "no trk records passed" && exit 0
+    [ -z "$(cat "$input_trkfile")" ] && _warn "no trk records passed" && exit 0
     tags_pattern='#[0-9a-zA-Z_:\-]\{1,\}\b'
     _dbg "tags_pattern: $tags_pattern"
     tags="$(cat "$input_trkfile" | grep -o "$tags_pattern" | sort | uniq)"
@@ -217,8 +238,13 @@ report() {
     [ -z "$1" ] && [ -t 0 ] && return 0
     tmpfile_report="$(_mktemp)"; trap "rm -f $tmpfile_report" EXIT
     [ -z "$1" ] && [ ! -t 0 ] && cat >"$tmpfile_report" && _info "building report from stdin"
-    _validate_date "$*" && set -- "^$(date -d "$*" "+%Y-%m-%d")"
-    [ -n "$1" ] && [ -t 0 ] && cat $trkfile | grep "$1" >"$tmpfile_report" && _info "building report for trkfile $trkfile"
+    _dbg "report args input: $*"
+    if _validate_date "$*"; then echo "$*" | grep month>/dev/null &&
+        set -- "^$(date -d "$*" "+%Y-%m")" ||
+        set -- "^$(date -d "$*" "+%Y-%m-%d")"; fi
+    _dbg "report args input: $*"
+    [ -n "$1" ] && [ -t 0 ] && cat "$trkfile" | grep "$*" >"$tmpfile_report" &&
+        _info "building report for trkfile $trkfile with filter [$*]"
     echo
     report_records "$tmpfile_report"
 }
@@ -228,9 +254,9 @@ main() {
         t) start_stop_timer "$@";;
         tt) start_timer_notification "$@";;
         a) add_record "$@";;
+        l) list_records "$@";;
         r) report "$@";;
         e) edit_trkfile;;
-        c) [ -f "$trkfile" ] && cat "$trkfile" | grep -v '^#';;
         h) helpmsg && exit 0;;
         g) cd "$(dirname "$trkfile")" && git "$@";;
         y) cd "$(dirname "$trkfile")" && git add -A && git commit -m "${*:-sync}"; git pull && git push;;

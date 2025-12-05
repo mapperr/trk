@@ -23,23 +23,27 @@ Usage [v0.5.0]:
     trk tt [notification_interval_in_minutes, default:5]
         starts a long running process that notifies regurarly if there is an active timer
 
-    trk a <date> <hours> <description>
+    trk a <date_arg> <hours> <description>
         adds a new entry to the trk file.
-        date is any valid value the 'date' command can take, e.g. '-', 'today', 'yesterday', etc.
+        date_arg is any valid value the 'date' command can take, e.g. '-', 'today', 'yesterday', etc.
         hours spent must be a number and can be decimal: 1, 4.25, 0.5, etc.
 
-    trk r [grep_pattern]
+    trk l [grep_pattern | date_arg]
+        prints trk records to stdout, filtering records with grep_pattern or a date_arg if passed.
+        by default it reads the trk file, but it can alternatively take input from stdin
+
+    trk r [grep_pattern | date_arg]
         shows an aggregate of trk records with per-tag totals,
-        grepping records with grep_pattern if passed.
+        filtering records with grep_pattern or a date_arg if passed.
         by default it reads the trk file, but it can alternatively take input from stdin
 
     trk e
         edits the trk file with your vis
-    trk c
-        prints the trk file to stdout
 
     trk g [git cmds/args]
         executes git commands in the trk file directory, e.g.: trk g pull
+    trk y [commit msg]
+        executes git add, commit -m 'commit msg' (or 'sync'), pull and push in the tsk directory
     trk h
         shows extended help
 
@@ -54,6 +58,12 @@ tags:
     (tag and value can contain only letters, numbers, undescores '_' and dashes '-', without blank spaces).
     those tags will result in the reports as additional aggregates or can be used by external integrations.
 
+filtering:
+    the l[ist] and r[eport] commands optionally take a grep pattern or a date arg as input.
+    the grep pattern is obviously grep-compatible a regex.
+    The date arg is a value that is a valid 'date' command specification: something like yesterday, 7 days ago, etc. 
+    trk tries to be smart, e.g.: if the date arg contains 'month', then it adjust the resulting filter to grep the entire month.
+    
 env vars:
     - TRK_DEBUG: set it to whatever value to show debug informations [default: unset, cur: unset]
     - TRK_FILE: the trk file you are working on [default: /home/mapperr/.trkfile, cur: /home/mapperr/src/git.sr.ht/~mapperr/timetracking/trkfile]
