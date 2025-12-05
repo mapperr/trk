@@ -233,7 +233,7 @@ main() {
         c) [ -f "$trkfile" ] && cat "$trkfile" | grep -v '^#';;
         h) helpmsg && exit 0;;
         g) cd "$(dirname "$trkfile")" && git "$@";;
-        y) cd "$(dirname "$trkfile")" && git add -A && git commit -m "${*:-sync}" && git pull && git push;;
+        y) cd "$(dirname "$trkfile")" && git add -A && git commit -m "${*:-sync}"; git pull && git push;;
         run) "$@";;
         *) if command -v $scriptname-"$cmd">/dev/null; then $scriptname-"$cmd" "$@"; else usage; exit 0; fi;
     esac
