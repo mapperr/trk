@@ -214,20 +214,21 @@ start_timer_notification() {
         notify-send -a trk -u low -t 4000 "trk timer: $timer_elapsed" "$description"
     done
 }
-list_records() {
-    [ -z "$1" ] && [ -t 0 ] && cat "$trkfile" | grep -v '^#' && return 0
-    [ -z "$1" ] && [ ! -t 0 ] && cat | grep -v '^#' && return 0
-    _dbg "list args input: $*"
+_calculate_grep_pattern() {
     if _validate_date "$*"; then
-        if echo "$*" | grep month>/dev/null; then set -- "^$(date -d "$*" "+%Y-%m")"
+        if echo "$*" | grep month>/dev/null; then printf '%s' "^$(date -d "$*" "+%Y-%m")"; return
         elif echo "$*" | grep week>/dev/null; then
             date_formatted="$(date -d "$*" "+%Y-%m-%d")"
             week_days="$(_week_from_date "$date_formatted")"
-            grep_pattern="$(for d in $week_days; do printf '\(%s\)\|' "$d"; done | sed 's/\\|$//')"
-            set -- "$(printf '%s' "$grep_pattern")"
-        else set -- "^$(date -d "$*" "+%Y-%m-%d")"; fi
-    fi
-    _dbg "list args input: $*"
+            grep_pattern="^$(for d in $week_days; do printf '\(%s\)\|' "$d"; done | sed 's/\\|$//')"
+            printf '%s' "$(printf '%s' "$grep_pattern")"; return
+        else printf '%s' "^$(date -d "$*" "+%Y-%m-%d")"; return; fi
+    fi; printf '%s' "$*"
+}
+list_records() {
+    [ -z "$1" ] && [ -t 0 ] && cat "$trkfile" | grep -v '^#' && return 0
+    [ -z "$1" ] && [ ! -t 0 ] && cat | grep -v '^#' && return 0
+    _dbg "list args input: $*"; set -- "$(_calculate_grep_pattern "$*")"; _dbg "computed input: $*"
     [ -n "$1" ] && [ -t 0 ] && cat "$trkfile" | grep -v '^#' | grep "$*" && return 0
     [ -n "$1" ] && [ ! -t 0 ] && cat | grep -v '^#' | grep "$*" && return 0
 }
@@ -272,11 +273,7 @@ report() {
     [ -z "$1" ] && [ -t 0 ] && return 0
     tmpfile_report="$(_mktemp)"; trap "rm -f $tmpfile_report" EXIT
     [ -z "$1" ] && [ ! -t 0 ] && cat >"$tmpfile_report" && _info "building report from stdin"
-    _dbg "report args input: $*"
-    if _validate_date "$*"; then echo "$*" | grep month>/dev/null &&
-        set -- "^$(date -d "$*" "+%Y-%m")" ||
-        set -- "^$(date -d "$*" "+%Y-%m-%d")"; fi
-    _dbg "report args input: $*"
+    _dbg "list args input: $*"; set -- "$(_calculate_grep_pattern "$*")"; _dbg "computed input: $*"
     [ -n "$1" ] && [ -t 0 ] && cat "$trkfile" | grep "$*" >"$tmpfile_report" &&
         _info "building report for trkfile $trkfile with filter [$*]"
     echo
