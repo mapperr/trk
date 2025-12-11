@@ -61,8 +61,8 @@ tags:
 filtering:
     the l[ist] and r[eport] commands optionally take a grep pattern or a date arg as input.
     the grep pattern is obviously grep-compatible a regex.
-    The date arg is a value that is a valid 'date' command specification: something like yesterday, 7 days ago, etc. 
-    trk tries to be smart, e.g.: if the date arg contains 'month', then it adjust the resulting filter to grep the entire month.
+    The date arg is a value that is a valid 'date' command 'DATE STRING': something like yesterday, 7 days ago, etc. 
+    trk tries to be smart, e.g.: if the date arg contains 'month' or 'week', then it adjust the resulting filter to grep the entire month/week.
     
 env vars:
     - TRK_DEBUG: set it to whatever value to show debug informations [default: unset, cur: unset]
