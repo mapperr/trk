@@ -125,7 +125,7 @@ _get_friendly_time_from_hours() {
 _week_from_date() {
     y=${1%%-*}; r=${1#*-}; m=${r%%-*}; d=${r#*-}
     # force base 10 to avoid leading-zero octal
-    y=$((10#$y)); m=$((10#$m)); d=$((10#$d))
+    m=${m#0}; d=${d#0}
     dow(){ y=$1;m=$2;d=$3; [ $m -lt 3 ]&&m=$((m+12)) y=$((y-1))
         K=$((y%100));J=$((y/100))
         h=$(( (d+(13*(m+1))/5+K+K/4+J/4+5*J)%7 ))
@@ -143,11 +143,11 @@ _week_from_date() {
         printf "%04d-%02d-%02d\n" "$y" "$m" "$d"; }
     w=$(dow "$y" "$m" "$d")
     while [ "$w" -gt 1 ]; do x=$(prev "$y" "$m" "$d"); y=${x%%-*}; r=${x#*-}; m=${r%%-*}; d=${r#*-}; 
-        y=$((10#$y)); m=$((10#$m)); d=$((10#$d)); w=$((w-1)); done
+    m=${m#0}; d=${d#0}; w=$((w-1)); done
     i=0; while [ "$i" -lt 7 ]; do
         printf "%04d-%02d-%02d\n" "$y" "$m" "$d"
         x=$(next "$y" "$m" "$d"); y=${x%%-*}; r=${x#*-}; m=${r%%-*}; d=${r#*-};
-        y=$((10#$y)); m=$((10#$m)); d=$((10#$d)); i=$((i+1))
+        m=${m#0}; d=${d#0}; i=$((i+1))
     done
 }
 edit_trkfile() { $editor "$trkfile"; }
