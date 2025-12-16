@@ -89,9 +89,7 @@ trk: started new timer: #client:google #project:user_data_collector_service #bil
 
 # check the timer
 $ trk r
-timer_start: 2025-09-22 15:23:27
-timer_descr: #client:google #project:user_data_collector_service #billable flowing unencrypted user data into company servers
-timer_elaps: 76d4h15m
+timer: 76d4h15m #client:google #project:user_data_collector_service #billable flowing unencrypted user data into company servers
 
 # ok, work finished, let's stop the timer
 $ trk t
