@@ -3,7 +3,9 @@ version="0.1.0"
 trkfile="${TRK_FILE:-$HOME/.trkfile}"
 trk_workday_hours="${TRK_WORKDAY_HOURS:-8}"
 editor="${EDITOR:-vi}"
-tmpdir="$TMPDIR:-/tmp"
+tmpdir="${TMPDIR:-/tmp}"
+logfile="$tmpdir/trk-harvest.log"
+harvest_trk_tag="#hid"
 
 usage() {
     s="$(basename $0)"
@@ -13,8 +15,9 @@ usage() {
         date_arg is any valid value the 'date' command can take, e.g. '-', 'today', 'yesterday', etc.
         hours spent must be a number and can be decimal: 1, 4.25, 0.5, etc.
 
-    $s t
+    $s t [f]
         get harvest tasks assigned to your user
+        the task list is cached in your tmpdir, to refresh it pass any argument to this command
 
     $s a <date_arg> <task_id> <hours> <notes>
         adds a new entry to the harvest.
@@ -98,47 +101,94 @@ _calculate_grep_pattern() {
         else printf '%s' "^$(date -d "$*" "+%Y-%m-%d")"; return; fi
     fi; printf '%s' "$*"
 }
-list_records() {
-    [ -z "$1" ] && [ -t 0 ] && cat "$trkfile" | grep -v '^#' && return 0
-    [ -z "$1" ] && [ ! -t 0 ] && cat | grep -v '^#' && return 0
-    _dbg "list args input: $*"; set -- "$(_calculate_grep_pattern "$*")"; _dbg "computed input: $*"
-    [ -n "$1" ] && [ -t 0 ] && cat "$trkfile" | grep -v '^#' | grep "$*" && return 0
-    [ -n "$1" ] && [ ! -t 0 ] && cat | grep -v '^#' | grep "$*" && return 0
-}
-
-get_task_assignments() {
-    curl -s "https://api.harvestapp.com/v2/task_assignments" \
+_get_time_entries() {
+    curl -s --fail "https://api.harvestapp.com/v2/time_entries?user_id=$TRK_HARVEST_USER_ID" \
       -H "Authorization: Bearer $TRK_HARVEST_ACCESS_TOKEN" \
       -H "Harvest-Account-Id: $TRK_HARVEST_ACCOUNT_ID" |
-      jq -r '.task_assignments[] | [.task.id, .project.name, .task.name] | @csv' | sort -st, -k2
+       jq -r '.time_entries.[] | "\(.spent_date) \(.hours) eid:\(.id) tid:\(.task.id) \(.notes)"'
 }
 list_time_entries() {
-    curl -s "https://api.harvestapp.com/v2/time_entries?user_id=$TRK_HARVEST_USER_ID" \
+    [ -z "$1" ] && [ -t 0 ] && _get_time_entries | grep -v '^#' && return 0
+    _dbg "list args input: $*"; set -- "$(_calculate_grep_pattern "$*")"; _dbg "computed input: $*"
+    [ -n "$1" ] && [ -t 0 ] && _get_time_entries | grep -v '^#' | grep "$*" && return 0
+}
+list_and_cache_task_assignments() {
+    force_refresh="$1"
+    task_cache_file="$tmpdir/trk-harvest-task-cache.txt"
+
+    [ -z "$force_refresh" ] && [ -r "$task_cache_file" ] && cat "$task_cache_file" && return 0
+    curl -s --fail "https://api.harvestapp.com/v2/task_assignments" \
       -H "Authorization: Bearer $TRK_HARVEST_ACCESS_TOKEN" \
       -H "Harvest-Account-Id: $TRK_HARVEST_ACCOUNT_ID" |
-       jq -r '.time_entries.[] | [ .spent_date, .hours, .id, .task.id, .notes ] | @csv'
+      jq -r '.task_assignments[] | "tid:\(.task.id) pid:\(.project.id) \(.project.name): \(.task.name)"' |
+      sort -sk3 | tee "$task_cache_file"
 }
-
+_add_time_entry() {
+    day="$1"
+    hours="$2"
+    taskid="$3"
+    notes="$4"
+    projectid=$(list_and_cache_task_assignments | grep "^tid:$taskid" | cut -d' ' -f2 | sed 's/pid://' | tr -d ' ')
+    curl -s --fail -o /dev/null "https://api.harvestapp.com/v2/time_entries" \
+      -H "Authorization: Bearer $TRK_HARVEST_ACCESS_TOKEN" \
+      -H "Harvest-Account-Id: $TRK_HARVEST_ACCOUNT_ID" \
+      -X POST \
+      -H "Content-Type: application/json" \
+      -d '{"user_id":'"$TRK_HARVEST_USER_ID"',"project_id":'"$projectid"',"task_id":'"$taskid"',"spent_date":"'"$day"'","hours":'"$hours"',"notes":"'"$notes"'"}' || return 1
+}
 add_time_entry() {
-    echo
+    day="$1"
+    hours="$2"
+    taskid="$3"
+    [ -z "$3" ] && usage && exit 1
+    shift; shift; shift
+    notes="$*"
+    ! _validate_date "$day" &&
+        _err "date [$day] is not a valid date" && exit 1
+    day="$(date -d "$day" '+%Y-%m-%d')"
+    ! _validate_hours "$hours" &&
+        _err "hours spent [$hours] is not a valid number" && exit 1
+    _add_time_entry "$day" "$hours" "$taskid" "$notes" ||
+        _err "error adding entry: $day $hours taskid:$taskid $notes"
+    _info "entry added: $day $hours taskid:$taskid $notes"
 }
-
 delete_time_entry() {
-    echo
+    entryid="$1"
+    curl --fail -s -o /dev/null "https://api.harvestapp.com/v2/time_entries/$entryid" \
+      -H "Authorization: Bearer $TRK_HARVEST_ACCESS_TOKEN" \
+      -H "Harvest-Account-Id: $TRK_HARVEST_ACCOUNT_ID" \
+      -X DELETE ||
+        _err "error deleting entry: $entryid"
+    _info "entry deleted:  $entryid"
 }
 
 plan() {
-    echo
+    export TRK_HARVEST_DRY_RUN=yes
+    sync_harvest
 }
 
 sync_harvest() {
-    echo
+    trk_entries="$(trk l $@ | grep "$harvest_trk_tag:" )"
+    harvest_entries="$(list_time_entries $@)"
+    echo "$harvest_entries" | while read c; do
+        entryid="$(echo "$c" | grep -o 'eid:[0-9]*' | sed 's/eid://' | tr -d ' ')"
+        [ -z "$entryid" ] && continue
+        [ -n "$TRK_HARVEST_DRY_RUN" ] && echo "- delete_time_entry $entryid" || delete_time_entry "$entryid"
+    done
+    echo "$trk_entries" | while read c; do
+        day="$(echo "$c" | cut -d' ' -f1)"
+        hours="$(echo "$c" | cut -d' ' -f2)"
+        taskid="$(echo "$c" | grep -o "$harvest_trk_tag:[0-9]*" | sed "s/$harvest_trk_tag://" | tr -d ' ')"
+        notes="$(echo "$c" | cut -d' ' -f3- | sed 's/#.[^ ]*//g' | sed 's/^ *//' | sed 's/ *$//')"
+        [ -n "$TRK_HARVEST_DRY_RUN" ] && echo "+ add_time_entry $day $hours $taskid $notes" ||
+            add_time_entry "$day" "$hours" "$taskid" "$notes"
+    done
 }
 
 main() {
     cmd="$1"; shift
     case $cmd in
-        t) get_task_assignments "$@";;
+        t) list_and_cache_task_assignments "$@";;
         l) list_time_entries "$@";;
         a) add_time_entry "$@";;
         d) delete_time_entry "$@";;
