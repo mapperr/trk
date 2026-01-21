@@ -1,0 +1,152 @@
+#! /bin/sh
+version="0.1.0"
+trkfile="${TRK_FILE:-$HOME/.trkfile}"
+trk_workday_hours="${TRK_WORKDAY_HOURS:-8}"
+editor="${EDITOR:-vi}"
+tmpdir="$TMPDIR:-/tmp"
+
+usage() {
+    s="$(basename $0)"
+    printf "Usage [v$version]:
+    $s l [grep_pattern | date_arg]
+        list time entries from harvest, filtering records with grep_pattern or a date_arg if passed.
+        date_arg is any valid value the 'date' command can take, e.g. '-', 'today', 'yesterday', etc.
+        hours spent must be a number and can be decimal: 1, 4.25, 0.5, etc.
+
+    $s t
+        get harvest tasks assigned to your user
+
+    $s a <date_arg> <task_id> <hours> <notes>
+        adds a new entry to the harvest.
+
+    $s d <entry_id>
+        deletes a time entry by id from harvest.
+
+    $s p [grep_pattern | date_arg]
+        output the changes that will be made on harvest to align with trk entries
+        for the specified pattern/date_arg
+
+    $s s [grep_pattern | date_arg]
+        one way sync from trk to harvest to align harvest with trk entries
+        for the specified pattern/date_arg
+
+    $s h
+        shows extended help
+"
+}
+helpmsg() {
+    usage; echo
+    printf "filtering:
+    the l[ist], a[dd], p[lan] and s[ync] commands optionally take a grep pattern or a date arg as input.
+    the grep pattern is obviously grep-compatible a regex.
+    The date arg is a value that is a valid 'date' command 'DATE STRING': something like yesterday, 7 days ago, etc. 
+    $s tries to be smart, e.g.: if the date arg contains 'month' or 'week', then it adjust the resulting filter to grep the entire month/week.
+
+task mapping:
+    WIP documentation
+
+env vars:
+    - TRK_HARVEST_USER_ID: set it to your harvest user id [cur: ${TRK_HARVEST_USER_ID:-unset}]
+    - TRK_HARVEST_ACCOUNT_ID: set it to your harvest account id [cur: ${TRK_HARVEST_ACCOUNT_ID:-unset}]
+    - TRK_HARVEST_ACCESS_TOKEN: set it to your harvest access token [cur: ${TRK_HARVEST_ACCESS_TOKEN:-unset}]
+"
+}
+_err() { printf "%s: error: %s\n" "$(basename "$0")" "$1" >&2; exit 1; }
+_warn() { printf "%s: warn: %s\n" "$(basename "$0")" "$1" >&2; }
+_info() { printf "%s: %s\n" "$(basename "$0")" "$1" >&2; }
+_dbg() { [ "$TRK_DEBUG" ] && printf "%s: debug: %s\n" "$(basename "$0")" "$1" >&2; return 0; }
+_mktemp() { tmpdir=/dev/shm; [ -w /dev/shm ] || tmpdir=${TMPDIR:-/tmp}; echo "mkstemp($tmpdir/XXXXXXXX)" | m4; }
+_today() { date '+%Y-%m-%d'; }
+_validate_date() { date -d "$(printf "$1")" >/dev/null 2>&1;}
+_validate_hours() { printf "$1" | grep -qE '^[+-]?[0-9]+(\.[0-9]+)?$';}
+_week_from_date() {
+    y=${1%%-*}; r=${1#*-}; m=${r%%-*}; d=${r#*-}
+    # force base 10 to avoid leading-zero octal
+    m=${m#0}; d=${d#0}
+    dow(){ y=$1;m=$2;d=$3; [ $m -lt 3 ]&&m=$((m+12)) y=$((y-1))
+        K=$((y%100));J=$((y/100))
+        h=$(( (d+(13*(m+1))/5+K+K/4+J/4+5*J)%7 ))
+        case $h in 2)echo 1;;3)echo 2;;4)echo 3;;5)echo 4;;6)echo 5;;0)echo 6;;1)echo 7;;esac; }
+    dim(){ case "$2" in
+      1|3|5|7|8|10|12) echo 31;;
+      4|6|9|11) echo 30;;
+      2) y=$1; ([ $((y%400)) -eq 0 ] || { [ $((y%4)) -eq 0 ] && [ $((y%100)) -ne 0 ]; }) && echo 29 || echo 28;;
+      *) echo 30;; # fallback
+    esac;}
+    next(){ y=$1;m=$2;d=$3; d=$((d+1)); x=$(dim "$y" "$m"); [ -z "$x" ] && x=31
+        if [ "$d" -gt "$x" ]; then d=1; m=$((m+1)); [ "$m" -gt 12 ] && m=1 && y=$((y+1)); fi
+        printf "%04d-%02d-%02d\n" "$y" "$m" "$d"; }
+    prev(){ y=$1;m=$2;d=$3; d=$((d-1)); if [ "$d" -lt 1 ]; then m=$((m-1)); [ "$m" -lt 1 ] && m=12 && y=$((y-1)); d=$(dim "$y" "$m"); fi
+        printf "%04d-%02d-%02d\n" "$y" "$m" "$d"; }
+    w=$(dow "$y" "$m" "$d")
+    while [ "$w" -gt 1 ]; do x=$(prev "$y" "$m" "$d"); y=${x%%-*}; r=${x#*-}; m=${r%%-*}; d=${r#*-}; 
+    m=${m#0}; d=${d#0}; w=$((w-1)); done
+    i=0; while [ "$i" -lt 7 ]; do
+        printf "%04d-%02d-%02d\n" "$y" "$m" "$d"
+        x=$(next "$y" "$m" "$d"); y=${x%%-*}; r=${x#*-}; m=${r%%-*}; d=${r#*-};
+        m=${m#0}; d=${d#0}; i=$((i+1))
+    done
+}
+_calculate_grep_pattern() {
+    if _validate_date "$*"; then
+        if echo "$*" | grep month>/dev/null; then printf '%s' "^$(date -d "$*" "+%Y-%m")"; return
+        elif echo "$*" | grep week>/dev/null; then
+            date_formatted="$(date -d "$*" "+%Y-%m-%d")"
+            week_days="$(_week_from_date "$date_formatted")"
+            grep_pattern="^$(for d in $week_days; do printf '\(%s\)\|' "$d"; done | sed 's/\\|$//')"
+            printf '%s' "$(printf '%s' "$grep_pattern")"; return
+        else printf '%s' "^$(date -d "$*" "+%Y-%m-%d")"; return; fi
+    fi; printf '%s' "$*"
+}
+list_records() {
+    [ -z "$1" ] && [ -t 0 ] && cat "$trkfile" | grep -v '^#' && return 0
+    [ -z "$1" ] && [ ! -t 0 ] && cat | grep -v '^#' && return 0
+    _dbg "list args input: $*"; set -- "$(_calculate_grep_pattern "$*")"; _dbg "computed input: $*"
+    [ -n "$1" ] && [ -t 0 ] && cat "$trkfile" | grep -v '^#' | grep "$*" && return 0
+    [ -n "$1" ] && [ ! -t 0 ] && cat | grep -v '^#' | grep "$*" && return 0
+}
+
+get_task_assignments() {
+    curl -s "https://api.harvestapp.com/v2/task_assignments" \
+      -H "Authorization: Bearer $TRK_HARVEST_ACCESS_TOKEN" \
+      -H "Harvest-Account-Id: $TRK_HARVEST_ACCOUNT_ID" |
+      jq -r '.task_assignments[] | [.task.id, .project.name, .task.name] | @csv' | sort -st, -k2
+}
+list_time_entries() {
+    curl -s "https://api.harvestapp.com/v2/time_entries?user_id=$TRK_HARVEST_USER_ID" \
+      -H "Authorization: Bearer $TRK_HARVEST_ACCESS_TOKEN" \
+      -H "Harvest-Account-Id: $TRK_HARVEST_ACCOUNT_ID" |
+       jq -r '.time_entries.[] | [ .spent_date, .hours, .id, .task.id, .notes ] | @csv'
+}
+
+add_time_entry() {
+    echo
+}
+
+delete_time_entry() {
+    echo
+}
+
+plan() {
+    echo
+}
+
+sync_harvest() {
+    echo
+}
+
+main() {
+    cmd="$1"; shift
+    case $cmd in
+        t) get_task_assignments "$@";;
+        l) list_time_entries "$@";;
+        a) add_time_entry "$@";;
+        d) delete_time_entry "$@";;
+        p) plan "$@";;
+        s) sync_harvest "$@";;
+        h) helpmsg && exit 0;;
+        run) "$@";;
+    esac
+}
+scriptname=$(basename $0)
+[ "$1" ] || { usage; exit 0; } && main "$@"
