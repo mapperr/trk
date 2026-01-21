@@ -74,18 +74,7 @@ _err() { printf "%s: error: %s\n" "$(basename "$0")" "$1" >&2; exit 1; }
 _warn() { printf "%s: warn: %s\n" "$(basename "$0")" "$1" >&2; }
 _info() { printf "%s: %s\n" "$(basename "$0")" "$1" >&2; }
 _dbg() { [ "$TRK_DEBUG" ] && printf "%s: debug: %s\n" "$(basename "$0")" "$1" >&2; return 0; }
-_rand_chars() {
-    # $1 = number of chars to receive, $2 = filter for the chars
-    LC_ALL=C tr -dc "$2" </dev/urandom | dd ibs=1 obs=1 count="$1" 2>/dev/null
-}
-_mktemp() {
-    tmpdir=/dev/shm
-    [ -w /dev/shm ] || tmpdir=${TMPDIR:-/tmp}
-    tmpfile=$tmpdir/sec.$(_rand_chars 16 'A-Za-z0-9') || _err "couldn't generate random characters"
-    mkdir -p "$(dirname "$tmpfile")" || _err "couldn't create temp dir"
-    touch "$tmpfile" || _err "couldn't create temp file"
-    printf "%s" "$tmpfile"
-}
+_mktemp() { tmpdir=/dev/shm; [ -w /dev/shm ] || tmpdir=${TMPDIR:-/tmp}; echo "mkstemp($tmpdir/XXXXXXXX)" | m4; }
 _today() { date '+%Y-%m-%d'; }
 _validate_date() { date -d "$(printf "$1")" >/dev/null 2>&1;}
 _validate_hours() { printf "$1" | grep -qE '^[+-]?[0-9]+(\.[0-9]+)?$';}
