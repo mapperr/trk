@@ -15,9 +15,10 @@ usage() {
         date_arg is any valid value the 'date' command can take, e.g. '-', 'today', 'yesterday', etc.
         hours spent must be a number and can be decimal: 1, 4.25, 0.5, etc.
 
-    $s t [f]
+    $s t
+    $s tt
         get harvest tasks assigned to your user
-        the task list is cached in your tmpdir, to refresh it pass any argument to this command
+        the task list is cached in your tmpdir, use 'tt' to force-refresh it
 
     $s a <date_arg> <task_id> <hours> <notes>
         adds a new entry to the harvest.
@@ -161,39 +162,104 @@ delete_time_entry() {
         _err "error deleting entry: $entryid"
     _info "entry deleted:  $entryid"
 }
+_compare_trk_and_harvest_entry() {
+    t="$1"
+    h="$2"
 
-plan() {
-    export TRK_HARVEST_DRY_RUN=yes
-    sync_harvest
+    tday="$(echo "$t" | cut -d' ' -f1)"
+    thours="$(echo "$t" | cut -d' ' -f2)"
+    ttaskid="$(echo "$t" | grep -o "$harvest_trk_tag:[0-9]*" | sed "s/$harvest_trk_tag://" | tr -d ' ')"
+    tnotes="$(echo "$t" | cut -d' ' -f3- | sed 's/#.[^ ]*//g' | sed 's/^ *//' | sed 's/ *$//')"
+
+    hday="$(echo "$h" | cut -d' ' -f1)"
+    hhours="$(echo "$h" | cut -d' ' -f2 | sed 's/\.0$//')"
+    htaskid="$(echo "$h" | grep -o 'tid:[0-9]*' | sed 's/tid://' | tr -d ' ')"
+    hnotes="$(echo "$h" | cut -d' ' -f5-)"
+
+    _dbg "comparing: [$tday] = [$hday] ;[$thours] = [$hhours] ;[$ttaskid] = [$htaskid] ;[$tnotes] = [$hnotes] ;"
+
+    [ "$tday" = "$hday" ] &&
+    [ "$thours" = "$hhours" ] &&
+    [ "$ttaskid" = "$htaskid" ] &&
+    [ "$tnotes" = "$hnotes" ] &&
+    return 0
+    return 1
 }
+plan() {
+    trk_entries="$(trk l "$@" | grep "$harvest_trk_tag:" )"
+    harvest_entries="$(list_time_entries "$@")"
 
-sync_harvest() {
-    trk_entries="$(trk l $@ | grep "$harvest_trk_tag:" )"
-    harvest_entries="$(list_time_entries $@)"
-    echo "$harvest_entries" | while read c; do
-        entryid="$(echo "$c" | grep -o 'eid:[0-9]*' | sed 's/eid://' | tr -d ' ')"
-        [ -z "$entryid" ] && continue
-        [ -n "$TRK_HARVEST_DRY_RUN" ] && echo "- delete_time_entry $entryid" || delete_time_entry "$entryid"
-    done
-    echo "$trk_entries" | while read c; do
-        day="$(echo "$c" | cut -d' ' -f1)"
-        hours="$(echo "$c" | cut -d' ' -f2)"
-        taskid="$(echo "$c" | grep -o "$harvest_trk_tag:[0-9]*" | sed "s/$harvest_trk_tag://" | tr -d ' ')"
-        notes="$(echo "$c" | cut -d' ' -f3- | sed 's/#.[^ ]*//g' | sed 's/^ *//' | sed 's/ *$//')"
-        [ -n "$TRK_HARVEST_DRY_RUN" ] && echo "+ add_time_entry $day $hours $taskid $notes" ||
+    duplicates="$(echo "$trk_entries" | uniq -d)"
+    [ -n "$duplicates" ] &&
+        _warn "there are some duplicated trk entries, the sync will not work as expected: $duplicates"
+
+    _dbg "building plan"
+    plan_file="$(_mktemp)"; trap "rm -f $plan_file" EXIT
+    while read t; do
+        found=""
+        _dbg "searching match for trk entry [$t]"
+        while read h; do
+            _compare_trk_and_harvest_entry "$t" "$h" &&
+            _dbg "match found [$h]" &&
+            found='y' && break
+        done <<EOFH
+$harvest_entries
+EOFH
+        [ -z "$found" ] && echo "+ $t" >>"$plan_file"
+        [ -n "$found" ] && echo "✓ $t" >>"$plan_file"
+    done <<EOFT &
+$trk_entries
+EOFT
+    while read h; do
+        found=""
+        _dbg "searching match for hrv entry [$h]"
+        while read t; do
+            _compare_trk_and_harvest_entry "$t" "$h" &&
+            _dbg "match found [$t]" &&
+            found='y' && break
+        done <<EOFT
+$trk_entries
+EOFT
+        [ -z "$found" ] && echo "- $h" >>"$plan_file"
+    done <<EOFH &
+$harvest_entries
+EOFH
+    wait
+    _info "plan:"
+    cat "$plan_file" | grep '^✓' | sort -k2
+    cat "$plan_file" | grep -v '^✓' | sort -k2
+}
+sync() {
+    plan="$(plan | grep -v '^✓ ')"
+    [ -z "$plan" ] && _info "nothing to sync" && return 0
+    while read p; do
+        if echo "$p" | grep '^+' >/dev/null; then
+            t="$(echo "$p" | sed 's/^+ //')"
+            day="$(echo "$t" | cut -d' ' -f1)"
+            hours="$(echo "$t" | cut -d' ' -f2)"
+            taskid="$(echo "$t" | grep -o "$harvest_trk_tag:[0-9]*" | sed "s/$harvest_trk_tag://" | tr -d ' ')"
+            notes="$(echo "$t" | cut -d' ' -f3- | sed 's/#.[^ ]*//g' | sed 's/^ *//' | sed 's/ *$//')"
             add_time_entry "$day" "$hours" "$taskid" "$notes"
-    done
+        fi
+        if echo "$p" | grep '^-' >/dev/null; then
+            entryid="$(echo "$p" | grep -o 'eid:[0-9]*' | sed 's/eid://' | tr -d ' ')"
+            delete_time_entry "$entryid"
+        fi
+    done <<EOF
+$plan
+EOF
 }
 
 main() {
     cmd="$1"; shift
     case $cmd in
-        t) list_and_cache_task_assignments "$@";;
+        t) list_and_cache_task_assignments;;
+        tt) list_and_cache_task_assignments "force_refresh";;
         l) list_time_entries "$@";;
         a) add_time_entry "$@";;
         d) delete_time_entry "$@";;
         p) plan "$@";;
-        s) sync_harvest "$@";;
+        s) sync "$@";;
         h) helpmsg && exit 0;;
         run) "$@";;
     esac
