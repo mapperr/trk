@@ -108,10 +108,18 @@ _get_time_entries() {
       -H "Harvest-Account-Id: $TRK_HARVEST_ACCOUNT_ID" |
        jq -r '.time_entries.[] | "\(.spent_date) \(.hours) eid:\(.id) tid:\(.task.id) \(.notes)"'
 }
-list_time_entries() {
+_list_time_entries() {
     [ -z "$1" ] && [ -t 0 ] && _get_time_entries | grep -v '^#' && return 0
     _dbg "list args input: $*"; set -- "$(_calculate_grep_pattern "$*")"; _dbg "computed input: $*"
     [ -n "$1" ] && [ -t 0 ] && _get_time_entries | grep -v '^#' | grep "$*" && return 0
+}
+list_time_entries() {
+    entries="$(_list_time_entries "$@")"
+    tot=0
+    for e in $(echo "$entries" | cut -d' ' -f2); do [ -z "$e" ] && continue
+        tot=$(echo "$tot + $e" | bc -l); done
+    echo "$entries"; echo
+    echo "tot: $(trk run _get_friendly_time_from_hours $tot)"
 }
 list_and_cache_task_assignments() {
     force_refresh="$1"
