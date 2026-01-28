@@ -195,7 +195,7 @@ _compare_trk_and_harvest_entry() {
 }
 plan() {
     trk_entries="$(trk l "$@" | grep "$harvest_trk_tag:" )"
-    harvest_entries="$(list_time_entries "$@")"
+    harvest_entries="$(_list_time_entries "$@")"
 
     duplicates="$(echo "$trk_entries" | uniq -d)"
     [ -n "$duplicates" ] &&
@@ -234,7 +234,7 @@ $harvest_entries
 EOFH
     wait
     _info "plan:"
-    cat "$plan_file" | grep '^✓' | sort -k2
+    cat "$plan_file" | grep '^✓' | sort -k2; echo
     cat "$plan_file" | grep -v '^✓' | sort -k2
 }
 sync() {
