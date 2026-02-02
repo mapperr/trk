@@ -242,6 +242,8 @@ EOFH
 sync() {
     plan="$(plan | grep -v '^✓ ')"
     [ -z "$plan" ] && _info "nothing to sync" && return 0
+    echo "$plan"
+    _info "syncing harvest..."
     while read p; do
         if echo "$p" | grep '^+' >/dev/null; then
             t="$(echo "$p" | sed 's/^+ //')"
@@ -255,9 +257,10 @@ sync() {
             entryid="$(echo "$p" | grep -o 'eid:[0-9]*' | sed 's/eid://' | tr -d ' ')"
             delete_time_entry "$entryid"
         fi
-    done <<EOF
+    done <<EOF &
 $plan
 EOF
+    wait
 }
 
 main() {
