@@ -207,6 +207,7 @@ plan() {
         found=""
         _dbg "searching match for trk entry [$t]"
         while read h; do
+            [ -z "$(printf "$h" | tr -d ' ')" ] && continue
             _compare_trk_and_harvest_entry "$t" "$h" &&
             _dbg "match found [$h]" &&
             found='y' && break
@@ -219,6 +220,7 @@ EOFH
 $trk_entries
 EOFT
     while read h; do
+        [ -z "$(printf "$h" | tr -d ' ')" ] && continue
         found=""
         _dbg "searching match for hrv entry [$h]"
         while read t; do
