@@ -71,6 +71,10 @@ Also you can:
 
 and other little quirks you can come up with.
 
+## Integrations
+
+- [harvest](https://www.getharvest.com/) -> put `trk-harvest` in your path and check out `trk harvest h`
+
 ## Development
 
 The source is hosted on https://git.sr.ht/~mapperr/trk
