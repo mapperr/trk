@@ -18,10 +18,11 @@ usage() {
         date_arg is any valid value the 'date' command can take, e.g. '-', 'today', 'yesterday', etc.
         hours spent must be a number and can be decimal: 1, 4.25, 0.5, etc.
 
-    $s t
-    $s tt
+    $s t [column_opts]
+    $s tt [column_opts]
         get harvest tasks assigned to your user
         the task list is cached in your tmpdir, use 'tt' to force-refresh it
+        the output is produced by the 'column' linux command, you can pass options to it
 
     $s a <date_arg> <hours> <task_id> <notes>
         adds a new entry to the harvest.
@@ -129,7 +130,7 @@ list_and_cache_task_assignments() {
     force_refresh="$1"
     task_cache_file="$tmpdir/trk-harvest-task-cache.json"
     project_cache_file="$tmpdir/trk-harvest-project-cache.json"
-    assignment_cache_file="$tmpdir/trk-harvest-assignment-cache.json"
+    assignment_cache_file="$tmpdir/trk-harvest-assignment-cache.txt"
 
     ( [ -n "$force_refresh" ] || [ ! -r "$project_cache_file" ] ) && 
     curl -s --fail "https://api.harvestapp.com/v2/projects" \
@@ -142,17 +143,38 @@ list_and_cache_task_assignments() {
       -H "Authorization: Bearer $TRK_HARVEST_ACCESS_TOKEN" \
       -H "Harvest-Account-Id: $TRK_HARVEST_ACCOUNT_ID" > "$task_cache_file"
 
-    [ -z "$force_refresh" ] && [ -r "$assignment_cache_file" ] && cat "$assignment_cache_file" && return 0
+    ( [ -n "$force_refresh" ] || [ ! -r "$assignment_cache_file" ] ) && {
     printf '' > "$assignment_cache_file"
     cat "$task_cache_file" |
       jq -r '.task_assignments[] | "tid:\(.task.id)'$task_assignment_separator'pid:\(.project.id)'$task_assignment_separator'\(.project.name)'$task_assignment_separator'\(.task.name)"' |
       while read c; do
           project_id="$(echo "$c" | grep -o 'pid:[0-9]\{1,\}' | sed 's/pid://')"
           client="$(cat "$project_cache_file" | jq -r '.projects[] | select( .id == '$project_id') | "cid:\(.client.id)'$task_assignment_separator'\(.client.name)"')"
-          echo "$c$task_assignment_separator$client" >> "$assignment_cache_file"
+          field_task_id="$(echo "$c" | cut -d"$task_assignment_separator" -f1)"
+          field_project_id="$(echo "$c" | cut -d"$task_assignment_separator" -f2)"
+          field_project_name="$(echo "$c" | cut -d"$task_assignment_separator" -f3)"
+          field_task_name="$(echo "$c" | cut -d"$task_assignment_separator" -f4)"
+          field_client_id="$(echo "$client" | cut -d"$task_assignment_separator" -f1)"
+          field_client_name="$(echo "$client" | cut -d"$task_assignment_separator" -f2)"
+          s="$task_assignment_separator"
+          printf "%s$s%s$s%s$s%s$s%s$s%s\n" \
+            "$field_client_id" \
+            "$field_project_id" \
+            "$field_task_id" \
+            "$field_client_name" \
+            "$field_project_name" \
+            "$field_task_name" \
+            >> "$assignment_cache_file"
       done
-      cat "$assignment_cache_file" | sort
+      cat "$assignment_cache_file" |
+        sort -t"$task_assignment_separator" -k4 -k5 -k6 \
+        > "$assignment_cache_file.sorted"
+      mv "$assignment_cache_file.sorted" "$assignment_cache_file"
+    }
+    cat "$assignment_cache_file"
 }
+print_task_assignments() { list_and_cache_task_assignments | sed 's/'$task_assignment_separator'/ | /g'; }
+print_task_assignments_refresh() { list_and_cache_task_assignments "refresh" | sed 's/'$task_assignment_separator'/ | /g'; }
 _add_time_entry() {
     day="$1"
     hours="$2"
@@ -292,8 +314,8 @@ EOF
 main() {
     cmd="$1"; shift
     case $cmd in
-        t) list_and_cache_task_assignments;;
-        tt) list_and_cache_task_assignments "force_refresh";;
+        t) print_task_assignments "$@";;
+        tt) print_task_assignments_refresh "$@";;
         l) list_time_entries "$@";;
         a) add_time_entry "$@";;
         d) delete_time_entry "$@";;
