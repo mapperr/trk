@@ -64,25 +64,81 @@ _err() { printf "%s: error: %s\n" "$(basename "$0")" "$1" >&2; exit 1; }
 _warn() { printf "%s: warn: %s\n" "$(basename "$0")" "$1" >&2; }
 _info() { printf "%s: %s\n" "$(basename "$0")" "$1" >&2; }
 _dbg() { [ "$TRK_DEBUG" ] && printf "%s %s: debug: %s\n" "$(_now)" "$(basename "$0")" "$1" >&2; return 0; }
-_mktemp() { tmpdir=/dev/shm; [ -w /dev/shm ] || tmpdir=${TMPDIR:-/tmp}; echo "mkstemp($tmpdir/XXXXXXXX)" | m4; }
 _today() { date '+%Y-%m-%d'; }
-_validate_date() { date -d "$(printf "$1")" >/dev/null 2>&1;}
-_validate_hours() { printf "$1" | grep -qE '^[+-]?[0-9]+(\.[0-9]+)?$';}
-_calculate_grep_pattern() { trk run _calculate_grep_pattern "$@"; }
+_mktemp() { trk run _mktemp "$@"; }
+_validate_date() { trk run _validate_date "$@";}
+_validate_hours() { trk run _validate_hours "$@";}
+_calculate_grep_pattern() { trk run _calculate_grep_pattern "$@";}
+_start_end_dates_from_grep_pattern() {
+    pattern=$1; [ -z "$pattern" ] && return 2
+    gen_months() {
+        awk '
+        function is_leap(y) {
+            return (y%4==0 && y%100!=0) || (y%400==0)
+        }
+        function mdays(y,m) {
+            if (m==1||m==3||m==5||m==7||m==8||m==10||m==12) return 31
+            if (m==4||m==6||m==9||m==11) return 30
+            return is_leap(y) ? 29 : 28
+        }
+        {
+            y = substr($0,1,4) + 0
+            m = substr($0,6,2) + 0
+            for (d=1; d<=mdays(y,m); d++)
+                printf "%04d-%02d-%02d\n", y, m, d
+        }'
+    }
+    gen_years() {
+        awk '
+        function is_leap(y) {
+            return (y%4==0 && y%100!=0) || (y%400==0)
+        }
+        function mdays(y,m) {
+            if (m==1||m==3||m==5||m==7||m==8||m==10||m==12) return 31
+            if (m==4||m==6||m==9||m==11) return 30
+            return is_leap(y) ? 29 : 28
+        }
+        {
+            y = $0 + 0
+            for (m=1; m<=12; m++)
+                for (d=1; d<=mdays(y,m); d++)
+                    printf "%04d-%02d-%02d\n", y, m, d
+        }'
+    }
+    filter_range() {
+        set -- $(grep "$pattern" | sort)
+        [ $# -eq 0 ] && return 1
+        start=$1
+        for d do end=$d; done
+        printf '%s %s\n' "$start" "$end"
+    }
+    months=$(printf '%s\n' "$pattern" | grep -Eo '[0-9]{4}-[0-9]{2}' | sort -u)
+    if [ -n "$months" ]; then printf '%s\n' "$months" | gen_months | filter_range && return 0; fi
+    years=$(printf '%s\n' "$pattern" | grep -Eo '[0-9]{4}' | sort -u)
+    if [ -n "$years" ]; then printf '%s\n' "$years" | gen_years | filter_range && return 0; fi
+    return 1
+}
 _get_time_entries() {
-    curl -s --fail "https://api.harvestapp.com/v2/time_entries?user_id=$TRK_HARVEST_USER_ID" \
+    start_date="$1"; end_date="$2"
+    _dbg "_get_time_entries args: [ $* ]"
+    [ -n "$start_date" ] && start_date_param="&from=$start_date"
+    [ -n "$end_date" ] && end_date_param="&to=$end_date"
+    _dbg "_get_time_entries queryparams: [ $start_date_param$end_date_param ]"
+    curl -s --fail "https://api.harvestapp.com/v2/time_entries?user_id=${TRK_HARVEST_USER_ID}${start_date_param}${end_date_param}" \
       -H "Authorization: Bearer $TRK_HARVEST_ACCESS_TOKEN" \
       -H "Harvest-Account-Id: $TRK_HARVEST_ACCOUNT_ID" |
        jq -r '.time_entries.[] | "\(.spent_date) \(.hours) eid:\(.id) tid:\(.task.id) \(.notes)"'
 }
 _list_time_entries() {
-    [ -z "$1" ] && [ -t 0 ] && _get_time_entries | grep -v '^#' && return 0
-    _dbg "list args input: $*"; set -- "$(_calculate_grep_pattern "$*")"; _dbg "computed input: $*"
-    [ -n "$1" ] && [ -t 0 ] && _get_time_entries | grep -v '^#' | grep "$*" && return 0
+    [ -t 0 ] || return 0
+    [ -z "$1" ] && _get_time_entries && return 0
+    _dbg "list args input: $*"; pattern="$(_calculate_grep_pattern "$*")"; _dbg "computed input: $pattern"
+    date_range="$(_start_end_dates_from_grep_pattern "$pattern")"
+    _dbg "date range: [ $date_range ]"
+    _get_time_entries "$(echo "$date_range"|cut -d' ' -f1)" "$(echo "$date_range"|cut -d' ' -f2)" | grep "$pattern" | sort
 }
 list_time_entries() {
-    entries="$(_list_time_entries "$@")"
-    tot=0
+    entries="$(_list_time_entries "$@")"; tot=0
     for e in $(echo "$entries" | cut -d' ' -f2); do [ -z "$e" ] && continue
         tot=$(echo "$tot + $e" | bc -l); done
     echo "$entries"; echo
@@ -143,7 +199,7 @@ _add_time_entry() {
     taskid="$3"
     notes="$4"
     _dbg "adding entry: [$*]"
-    projectid=$(list_and_cache_task_assignments | grep "^tid:$taskid" | cut -d"$task_assignment_separator" -f2 | sed 's/pid://' | tr -d ' ')
+    projectid=$(list_and_cache_task_assignments | grep "tid:$taskid" | cut -d"$task_assignment_separator" -f2 | sed 's/pid://' | tr -d ' ')
     _dbg "found project id: [$projectid]"
     curl -s --fail -o /dev/null "https://api.harvestapp.com/v2/time_entries" \
       -H "Authorization: Bearer $TRK_HARVEST_ACCESS_TOKEN" \
@@ -157,6 +213,7 @@ add_time_entry() {
     hours="$2"
     taskid="$3"
     [ -z "$3" ] && usage && exit 1
+    _dbg "adding entry: [$*]"
     shift; shift; shift
     notes="$*"
     ! _validate_date "$day" &&
@@ -165,8 +222,8 @@ add_time_entry() {
     ! _validate_hours "$hours" &&
         _err "hours spent [$hours] is not a valid number" && exit 1
     _add_time_entry "$day" "$hours" "$taskid" "$notes" ||
-        _err "error adding entry: $day $hours taskid:$taskid $notes"
-    _info "entry added: $day $hours taskid:$taskid $notes"
+        _err "error adding entry: [$day $hours $taskid $notes]"
+    _info "entry added: $day $hours $taskid $notes"
 }
 delete_time_entry() {
     entryid="$1"
@@ -271,6 +328,7 @@ sync() {
 $plan
 EOF
     wait
+    _info "sync complete"
 }
 
 main() {
