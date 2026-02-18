@@ -7,6 +7,9 @@ tmpdir="${TMPDIR:-/tmp}"
 logfile="$tmpdir/trk-harvest.log"
 harvest_trk_tag="#hid"
 
+# one-character separator
+task_assignment_separator='~'
+
 usage() {
     s="$(basename $0)"
     printf "Usage [v$version]:
@@ -20,7 +23,7 @@ usage() {
         get harvest tasks assigned to your user
         the task list is cached in your tmpdir, use 'tt' to force-refresh it
 
-    $s a <date_arg> <task_id> <hours> <notes>
+    $s a <date_arg> <hours> <task_id> <notes>
         adds a new entry to the harvest.
 
     $s d <entry_id>
@@ -55,10 +58,11 @@ env vars:
     - TRK_HARVEST_ACCESS_TOKEN: set it to your harvest access token [cur: ${TRK_HARVEST_ACCESS_TOKEN:-unset}]
 "
 }
+_now() { date '+%Y-%m-%dT%H:%M:%S'; }
 _err() { printf "%s: error: %s\n" "$(basename "$0")" "$1" >&2; exit 1; }
 _warn() { printf "%s: warn: %s\n" "$(basename "$0")" "$1" >&2; }
 _info() { printf "%s: %s\n" "$(basename "$0")" "$1" >&2; }
-_dbg() { [ "$TRK_DEBUG" ] && printf "%s: debug: %s\n" "$(basename "$0")" "$1" >&2; return 0; }
+_dbg() { [ "$TRK_DEBUG" ] && printf "%s %s: debug: %s\n" "$(_now)" "$(basename "$0")" "$1" >&2; return 0; }
 _mktemp() { tmpdir=/dev/shm; [ -w /dev/shm ] || tmpdir=${TMPDIR:-/tmp}; echo "mkstemp($tmpdir/XXXXXXXX)" | m4; }
 _today() { date '+%Y-%m-%d'; }
 _validate_date() { date -d "$(printf "$1")" >/dev/null 2>&1;}
@@ -126,7 +130,6 @@ list_and_cache_task_assignments() {
     task_cache_file="$tmpdir/trk-harvest-task-cache.json"
     project_cache_file="$tmpdir/trk-harvest-project-cache.json"
     assignment_cache_file="$tmpdir/trk-harvest-assignment-cache.json"
-    sep='~'
 
     ( [ -n "$force_refresh" ] || [ ! -r "$project_cache_file" ] ) && 
     curl -s --fail "https://api.harvestapp.com/v2/projects" \
@@ -142,11 +145,11 @@ list_and_cache_task_assignments() {
     [ -z "$force_refresh" ] && [ -r "$assignment_cache_file" ] && cat "$assignment_cache_file" && return 0
     printf '' > "$assignment_cache_file"
     cat "$task_cache_file" |
-      jq -r '.task_assignments[] | "tid:\(.task.id)'$sep'pid:\(.project.id)'$sep'\(.project.name)'$sep'\(.task.name)"' |
+      jq -r '.task_assignments[] | "tid:\(.task.id)'$task_assignment_separator'pid:\(.project.id)'$task_assignment_separator'\(.project.name)'$task_assignment_separator'\(.task.name)"' |
       while read c; do
           project_id="$(echo "$c" | grep -o 'pid:[0-9]\{1,\}' | sed 's/pid://')"
-          client="$(cat "$project_cache_file" | jq -r '.projects[] | select( .id == '$project_id') | "cid:\(.client.id)'$sep'\(.client.name)"')"
-          echo "$c$sep$client" >> "$assignment_cache_file"
+          client="$(cat "$project_cache_file" | jq -r '.projects[] | select( .id == '$project_id') | "cid:\(.client.id)'$task_assignment_separator'\(.client.name)"')"
+          echo "$c$task_assignment_separator$client" >> "$assignment_cache_file"
       done
       cat "$assignment_cache_file" | sort
 }
@@ -155,7 +158,9 @@ _add_time_entry() {
     hours="$2"
     taskid="$3"
     notes="$4"
-    projectid=$(list_and_cache_task_assignments | grep "^tid:$taskid" | cut -d' ' -f2 | sed 's/pid://' | tr -d ' ')
+    _dbg "adding entry: [$*]"
+    projectid=$(list_and_cache_task_assignments | grep "^tid:$taskid" | cut -d"$task_assignment_separator" -f2 | sed 's/pid://' | tr -d ' ')
+    _dbg "found project id: [$projectid]"
     curl -s --fail -o /dev/null "https://api.harvestapp.com/v2/time_entries" \
       -H "Authorization: Bearer $TRK_HARVEST_ACCESS_TOKEN" \
       -H "Harvest-Account-Id: $TRK_HARVEST_ACCOUNT_ID" \
@@ -212,9 +217,12 @@ _compare_trk_and_harvest_entry() {
     return 1
 }
 plan() {
+    _dbg "getting trk entries"
     trk_entries="$(trk l "$@" | grep "$harvest_trk_tag:" )"
+    _dbg "getting harvest entries"
     harvest_entries="$(_list_time_entries "$@")"
 
+    _dbg "checking for duplicated trk entries"
     duplicates="$(echo "$trk_entries" | uniq -d)"
     [ -n "$duplicates" ] &&
         _warn "there are some duplicated trk entries, the sync will not work as expected: $duplicates"
@@ -258,9 +266,9 @@ EOFH
     cat "$plan_file" | grep -v '^✓' | sort -k2
 }
 sync() {
-    plan="$(plan | grep -v '^✓ ')"
+    plan="$(plan "$@" | grep -v '^✓ ')"
     [ -z "$plan" ] && _info "nothing to sync" && return 0
-    echo "$plan"
+    echo "$plan" ; echo
     _info "syncing harvest..."
     while read p; do
         if echo "$p" | grep '^+' >/dev/null; then
