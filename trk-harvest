@@ -123,14 +123,32 @@ list_time_entries() {
 }
 list_and_cache_task_assignments() {
     force_refresh="$1"
-    task_cache_file="$tmpdir/trk-harvest-task-cache.txt"
+    task_cache_file="$tmpdir/trk-harvest-task-cache.json"
+    project_cache_file="$tmpdir/trk-harvest-project-cache.json"
+    assignment_cache_file="$tmpdir/trk-harvest-assignment-cache.json"
+    sep='~'
 
-    [ -z "$force_refresh" ] && [ -r "$task_cache_file" ] && cat "$task_cache_file" && return 0
+    ( [ -n "$force_refresh" ] || [ ! -r "$project_cache_file" ] ) && 
+    curl -s --fail "https://api.harvestapp.com/v2/projects" \
+      -H "Authorization: Bearer $TRK_HARVEST_ACCESS_TOKEN" \
+      -H "Harvest-Account-Id: $TRK_HARVEST_ACCOUNT_ID" > "$project_cache_file"
+      cat "$project_cache_file" |
+
+    ( [ -n "$force_refresh" ] || [ ! -r "$task_cache_file" ] ) && 
     curl -s --fail "https://api.harvestapp.com/v2/task_assignments" \
       -H "Authorization: Bearer $TRK_HARVEST_ACCESS_TOKEN" \
-      -H "Harvest-Account-Id: $TRK_HARVEST_ACCOUNT_ID" |
-      jq -r '.task_assignments[] | "tid:\(.task.id) pid:\(.project.id) \(.project.name): \(.task.name)"' |
-      sort -sk3 | tee "$task_cache_file"
+      -H "Harvest-Account-Id: $TRK_HARVEST_ACCOUNT_ID" > "$task_cache_file"
+
+    [ -z "$force_refresh" ] && [ -r "$assignment_cache_file" ] && cat "$assignment_cache_file" && return 0
+    printf '' > "$assignment_cache_file"
+    cat "$task_cache_file" |
+      jq -r '.task_assignments[] | "tid:\(.task.id)'$sep'pid:\(.project.id)'$sep'\(.project.name)'$sep'\(.task.name)"' |
+      while read c; do
+          project_id="$(echo "$c" | grep -o 'pid:[0-9]\{1,\}' | sed 's/pid://')"
+          client="$(cat "$project_cache_file" | jq -r '.projects[] | select( .id == '$project_id') | "cid:\(.client.id)'$sep'\(.client.name)"')"
+          echo "$c$sep$client" >> "$assignment_cache_file"
+      done
+      cat "$assignment_cache_file" | sort
 }
 _add_time_entry() {
     day="$1"
