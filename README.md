@@ -36,6 +36,7 @@ Usage [v0.5.0]:
         shows an aggregate of trk records with per-tag totals,
         filtering records with grep_pattern or a date_arg if passed.
         by default it reads the trk file, but it can alternatively take input from stdin
+        it shows a chargeability percentage based on the #billable tag
 
     trk e
         edits the trk file with your vis
