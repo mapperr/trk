@@ -164,22 +164,24 @@ list_and_cache_task_assignments() {
     ( [ -n "$force_refresh" ] || [ ! -r "$assignment_cache_file" ] ) && {
     printf '' > "$assignment_cache_file"
     cat "$task_cache_file" |
-      jq -r '.task_assignments[] | "tid:\(.task.id)'$task_assignment_separator'pid:\(.project.id)'$task_assignment_separator'\(.project.name)'$task_assignment_separator'\(.task.name)"' |
+      jq -r '.task_assignments[] | "tid:\(.task.id)'$task_assignment_separator'pid:\(.project.id)'$task_assignment_separator'\(.project.name)'$task_assignment_separator'\(.project.code)'$task_assignment_separator'\(.task.name)"' |
       while read c; do
           project_id="$(echo "$c" | grep -o 'pid:[0-9]\{1,\}' | sed 's/pid://')"
           client="$(cat "$project_cache_file" | jq -r '.projects[] | select( .id == '$project_id') | "cid:\(.client.id)'$task_assignment_separator'\(.client.name)"')"
           field_task_id="$(echo "$c" | cut -d"$task_assignment_separator" -f1)"
           field_project_id="$(echo "$c" | cut -d"$task_assignment_separator" -f2)"
           field_project_name="$(echo "$c" | cut -d"$task_assignment_separator" -f3)"
-          field_task_name="$(echo "$c" | cut -d"$task_assignment_separator" -f4)"
+          field_project_code="$(echo "$c" | cut -d"$task_assignment_separator" -f4)"
+          field_task_name="$(echo "$c" | cut -d"$task_assignment_separator" -f5)"
           field_client_id="$(echo "$client" | cut -d"$task_assignment_separator" -f1)"
           field_client_name="$(echo "$client" | cut -d"$task_assignment_separator" -f2)"
           s="$task_assignment_separator"
-          printf "%s$s%s$s%s$s%s$s%s$s%s\n" \
+          printf "%s$s%s$s%s$s%s$s%s$s%s$s%s\n" \
             "$field_client_id" \
             "$field_project_id" \
             "$field_task_id" \
             "$field_client_name" \
+            "$field_project_code" \
             "$field_project_name" \
             "$field_task_name" \
             >> "$assignment_cache_file"
