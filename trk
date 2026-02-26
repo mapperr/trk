@@ -246,16 +246,20 @@ report_records() {
         total_hours_sum="${total_hours_sum}+${record_hours}"
         for t in $record_tags; do echo "$t $record_hours" >>"$tmpfile_tags"; done
     done <"$input_trkfile"
+    billable_tag_spent_hours=0
     for t in $tags; do
         tag_spent_sum_string="$(grep "^$t\b" "$tmpfile_tags" | cut -d' ' -f2 | paste -sd+)"
         tag_spent="$(awk "BEGIN { print $tag_spent_sum_string }")"
+        [ "$t" = "#billable" ] && billable_tag_spent_hours=$tag_spent
         [ -z "$TRK_UNFRIENDLY" ] && tag_spent="$(_get_friendly_time_from_hours "$tag_spent")"
         echo "tag: $t $tag_spent"
     done
     echo
     total_time_spent="$(awk "BEGIN { print $total_hours_sum }")"
+    chargeability_percentage="$(echo "$billable_tag_spent_hours * 100 / $total_time_spent" | bc)"
     [ -z "$TRK_UNFRIENDLY" ] && total_time_spent="$(_get_friendly_time_from_hours "$total_time_spent")"
     echo "tot_spent: $total_time_spent"
+    echo "tot_chargeability: $chargeability_percentage%"
 }
 report() {
     report_timer
