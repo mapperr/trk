@@ -1,0 +1,121 @@
+#! /bin/sh
+version="0.1.0"
+trkfile="${TRK_FILE:-$HOME/.trkfile}"
+trk_workday_hours="${TRK_WORKDAY_HOURS:-8}"
+editor="${EDITOR:-vi}"
+tmpdir="${TMPDIR:-/tmp}"
+logfile="$tmpdir/trk-jira.log"
+jira_trk_tag="#jid"
+
+usage() {
+    s="$(basename $0)"
+    printf "Usage [v$version]:
+    $s l [grep_pattern | date_arg]
+        list time entries from jira, filtering records with grep_pattern or a date_arg if passed.
+        date_arg is any valid value the 'date' command can take, e.g. '-', 'today', 'yesterday', etc.
+        hours spent must be a number and can be decimal: 1, 4.25, 0.5, etc.
+
+    $s t
+    $s tt
+        get time-tracking enabled jira tasks assigned to your user
+        the task list is cached in your tmpdir, use 'tt' to force-refresh it
+
+    $s a <date_arg> <hours> <task_id> <notes>
+        adds a new entry to the jira.
+
+    $s d <entry_id>
+        deletes a time entry from jira by id.
+
+    $s p [grep_pattern | date_arg]
+        output the changes that will be made on jira to align with trk entries
+        for the specified pattern/date_arg
+
+    $s s [grep_pattern | date_arg]
+        one way sync from trk to jira to align jira with trk entries
+        for the specified pattern/date_arg
+
+    $s h
+        shows extended help
+"
+}
+helpmsg() {
+    usage; echo
+    printf "filtering:
+    the l[ist], a[dd], p[lan] and s[ync] commands optionally take a grep pattern or a date arg as input.
+    the grep pattern is obviously grep-compatible a regex.
+    The date arg is a value that is a valid 'date' command 'DATE STRING': something like yesterday, 7 days ago, etc. 
+    $s tries to be smart, e.g.: if the date arg contains 'month' or 'week', then it adjust the resulting filter to grep the entire month/week.
+
+task mapping:
+    WIP documentation
+
+env vars:
+    - TRK_JIRA_BASEURL: set it to your jira base url [cur: ${TRK_JIRA_BASEURL:-jira.atlassian.com}]
+    - TRK_JIRA_USER: set it to your jira user [cur: ${TRK_JIRA_USER:-unset}]
+    - TRK_JIRA_TOKEN: set it to your jira access token [cur: ${TRK_JIRA_TOKEN:-unset}]
+"
+}
+_now() { date '+%Y-%m-%dT%H:%M:%S'; }
+_err() { printf "%s: error: %s\n" "$(basename "$0")" "$1" >&2; exit 1; }
+_warn() { printf "%s: warn: %s\n" "$(basename "$0")" "$1" >&2; }
+_info() { printf "%s: %s\n" "$(basename "$0")" "$1" >&2; }
+_dbg() { [ "$TRK_DEBUG" ] && printf "%s %s: debug: %s\n" "$(_now)" "$(basename "$0")" "$1" >&2; return 0; }
+_today() { date '+%Y-%m-%d'; }
+_mktemp() { trk run _mktemp "$@"; }
+_validate_date() { trk run _validate_date "$@";}
+_validate_hours() { trk run _validate_hours "$@";}
+_calculate_grep_pattern() { trk run _calculate_grep_pattern "$@";}
+
+_urlencode () {
+  string=$@; format=; set --
+  while
+    literal=${string%%[!-._~0-9A-Za-z]*}
+    case "$literal" in
+      ?*) format=$format%s; set -- "$@" "$literal"; string=${string#$literal};;
+    esac
+    case "$string" in
+      "") false;;
+    esac
+  do
+    tail=${string#?}
+    head=${string%$tail}
+    format=$format%%%02x
+    set -- "$@" "'$head"
+    string=$tail
+  done
+  printf "$format\\n" "$@"
+}
+
+list_and_cache_timetrackable_issues() {
+    force_refresh="$1"
+    timetrackable_issues_cache_file="$tmpdir/trk-jira-timetrackable-issues-cache.json"
+
+	jql="$(_urlencode "project in projectsWhereUserHasPermission('Work on issues') order by updatedDate DESC")"
+
+	{ [ -n "$force_refresh" ] || [ ! -r "$timetrackable_issues_cache_file" ]; } && 
+	# TODO handle pagination
+    curl -v --fail "https://$TRK_JIRA_BASEURL/rest/api/latest/search/jql?jql=$jql&fields=id,summary" \
+		--user "$TRK_JIRA_USER:$TRK_JIRA_TOKEN" > "$timetrackable_issues_cache_file"
+
+	# TODO do some sort of presentation (look at trk-harvest)
+    cat "$timetrackable_issues_cache_file" | jq
+}
+print_timetrackable_issue_list() { list_and_cache_timetrackable_issues; }
+print_timetrackable_issue_list_refresh() { list_and_cache_timetrackable_issues "refresh"; }
+
+main() {
+    cmd="$1"; shift
+    case $cmd in
+        t) print_timetrackable_issue_list "$@";;
+        tt) print_timetrackable_issue_list_refresh "$@";;
+        l) list_worklogs "$@";;
+        a) add_worklog "$@";;
+        d) delete_worklog "$@";;
+        p) plan "$@";;
+        s) sync "$@";;
+        h) helpmsg && exit 0;;
+        run) "$@";;
+    esac
+}
+scriptname=$(basename $0)
+[ "$1" ] || { usage; exit 0; } && main "$@"
