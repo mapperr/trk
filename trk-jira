@@ -20,11 +20,11 @@ usage() {
         get time-tracking enabled jira tasks assigned to your user
         the task list is cached in your tmpdir, use 'tt' to force-refresh it
 
-    $s a <date_arg> <hours> <task_id> <notes>
-        adds a new entry to the jira.
+    $s a <date_arg> <hours> <issue_id> <notes>
+        adds a new worklog record to the jira issue.
 
-    $s d <entry_id>
-        deletes a time entry from jira by id.
+    $s d <worklog_id>
+        deletes a worklog record from jira.
 
     $s p [grep_pattern | date_arg]
         output the changes that will be made on jira to align with trk entries
