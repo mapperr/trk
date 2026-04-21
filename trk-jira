@@ -103,6 +103,26 @@ list_and_cache_timetrackable_issues() {
 print_timetrackable_issue_list() { list_and_cache_timetrackable_issues; }
 print_timetrackable_issue_list_refresh() { list_and_cache_timetrackable_issues "refresh"; }
 
+list_worklogs() {
+	echo todo
+}
+
+add_worklog() {
+	echo todo
+}
+
+delete_worklog() {
+	echo todo
+}
+
+plan() {
+	echo todo
+}
+
+sync() {
+	echo todo
+}
+
 main() {
     cmd="$1"; shift
     case $cmd in
