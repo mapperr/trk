@@ -39,7 +39,7 @@ Usage [v0.5.0]:
         it shows a chargeability percentage based on the #billable tag
 
     trk e
-        edits the trk file with your vis
+        edits the trk file with your $EDITOR
 
     trk g [git cmds/args]
         executes git commands in the trk file directory, e.g.: trk g pull
@@ -66,12 +66,12 @@ filtering:
     trk tries to be smart, e.g.: if the date arg contains 'month' or 'week', then it adjust the resulting filter to grep the entire month/week.
     
 env vars:
-    - TRK_DEBUG: set it to whatever value to show debug informations [default: unset, cur: unset]
-    - TRK_FILE: the trk file you are working on [default: /home/mapperr/.trkfile, cur: /home/mapperr/src/git.sr.ht/~mapperr/timetracking/trkfile]
-    - TRK_WORKDAY_HOURS: workday hours [default: 8, cur: 8]
-    - TRK_UNFRIENDLY: prints spent time in hours with 2 decimals, useful for sorting, parsing, etc. [default: unset, cur: unset]
+    - TRK_DEBUG: set it to whatever value to show debug informations [default: unset, cur: ...]
+    - TRK_FILE: the trk file you are working on [default: ~/.trkfile, cur: ...]
+    - TRK_WORKDAY_HOURS: workday hours [default: 8, cur: ...]
+    - TRK_UNFRIENDLY: prints spent time in hours with 2 decimals, useful for sorting, parsing, etc. [default: unset, cur: ...]
     - TRK_TAGS: trk will prepend the content of this var to the record description,
-        useful if, e.g., you are working on a specific client/project all day [default: unset, cur: unset]
+        useful if, e.g., you are working on a specific client/project all day [default: unset, cur: ...]
 ```
 
 
