@@ -59,6 +59,9 @@ tags:
     (tag and value can contain only letters, numbers, undescores '_' and dashes '-', without blank spaces).
     those tags will result in the reports as additional aggregates or can be used by external integrations.
 
+special-tags:
+	trk report compute your chargeability based on the #billable tag
+
 filtering:
     the l[ist] and r[eport] commands optionally take a grep pattern or a date arg as input.
     the grep pattern is obviously grep-compatible a regex.
