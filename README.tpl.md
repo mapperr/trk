@@ -60,6 +60,7 @@ tag: #meeting 7h30m
 tag: #project:user_data_collector_service 76d4h15m
 
 tot_spent: 77d3h45m
+tot_chargeability: 100%
 ```
 
 Also you can:
