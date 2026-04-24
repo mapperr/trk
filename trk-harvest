@@ -144,63 +144,65 @@ list_time_entries() {
     echo "$entries"; echo
     echo "tot: $(trk run _get_friendly_time_from_hours $tot)"
 }
-_fetch_projects() {
-    curl -s --fail "https://api.harvestapp.com/v2/projects" \
-      -H "Authorization: Bearer $TRK_HARVEST_ACCESS_TOKEN" \
-      -H "Harvest-Account-Id: $TRK_HARVEST_ACCOUNT_ID" | jq
-}
-_fetch_task_assignments() {
-    curl -s --fail "https://api.harvestapp.com/v2/task_assignments" \
+_fetch_project_assignments() {
+    curl -s --fail "https://api.harvestapp.com/v2/users/me/project_assignments" \
       -H "Authorization: Bearer $TRK_HARVEST_ACCESS_TOKEN" \
       -H "Harvest-Account-Id: $TRK_HARVEST_ACCOUNT_ID" | jq
 }
 list_and_cache_task_assignments() {
     force_refresh="$1"
-    task_assignments_cache_file="$tmpdir/trk-harvest-task-cache.json"
-    project_cache_file="$tmpdir/trk-harvest-project-cache.json"
+    project_assignments_cache_file="$tmpdir/trk-harvest-project-assignments-cache.json"
     assignment_cache_file="$tmpdir/trk-harvest-assignment-cache.txt"
 
 	if [ -n "$force_refresh" ]; then
 		_dbg "force refreshing"
-		[ -r "$project_cache_file" ] && rm -f "$project_cache_file"
-		[ -r "$task_assignments_cache_file" ] && rm -f "$task_assignments_cache_file"
+		[ -r "$project_assignments_cache_file" ] && rm -f "$project_assignments_cache_file"
 		[ -r "$assignment_cache_file" ] && rm -f "$assignment_cache_file"
 	fi
 
-    [ ! -r "$project_cache_file" ] && _dbg "fetching projects" && _fetch_projects > "$project_cache_file"
-    [ ! -r "$task_assignments_cache_file" ] && _dbg "fetching task assignments" && _fetch_task_assignments > "$task_assignments_cache_file"
+    [ ! -r "$project_assignments_cache_file" ] && _dbg "fetching assignments" && _fetch_project_assignments > "$project_assignments_cache_file"
     [ ! -r "$assignment_cache_file" ] && _dbg "processing task assignments" && {
 		printf '' > "$assignment_cache_file"
-		cat "$task_assignments_cache_file" |
-		  jq -r '.task_assignments[] | "tid:\(.task.id)'$task_assignment_separator'pid:\(.project.id)'$task_assignment_separator'\(.project.name)'$task_assignment_separator'\(.project.code)'$task_assignment_separator'\(.task.name)"' |
-		  while read c; do
-			  _dbg "processing [$c]"
-			  project_id="$(echo "$c" | grep -o 'pid:[0-9]\{1,\}' | sed 's/pid://')"
-			  client="$(cat "$project_cache_file" | jq -r '.projects[] | select( .id == '$project_id') | "cid:\(.client.id)'$task_assignment_separator'\(.client.name)"')"
-			  field_task_id="$(echo "$c" | cut -d"$task_assignment_separator" -f1)"
-			  field_project_id="$(echo "$c" | cut -d"$task_assignment_separator" -f2)"
-			  field_project_name="$(echo "$c" | cut -d"$task_assignment_separator" -f3)"
-			  field_project_code="$(echo "$c" | cut -d"$task_assignment_separator" -f4)"
-			  field_task_name="$(echo "$c" | cut -d"$task_assignment_separator" -f5)"
-			  field_client_id="$(echo "$client" | cut -d"$task_assignment_separator" -f1)"
-			  field_client_name="$(echo "$client" | cut -d"$task_assignment_separator" -f2)"
+		tmpfile_jqfilter="$(trk run _mktemp)"; trap "rm -f $tmpfile_jqfilter" EXIT
+		cat <<'EOF' >"$tmpfile_jqfilter"
+.project_assignments[]
+| {project, client} as $pc
+| .task_assignments[]
+| {
+    task_id: .task.id,
+    task_name: .task.name,
+    project_id: $pc.project.id,
+    project_name: $pc.project.name,
+    project_code: $pc.project.code,
+    client_id: $pc.client.id,
+    client_name: $pc.client.name
+  }
+EOF
+		cat "$project_assignments_cache_file" |
+			jq -c -f "$tmpfile_jqfilter" | while IFS= read -r row; do
+			  field_task_id="$(printf '%s' "$row" | jq -r '.task_id')"
+			  field_task_name="$(printf '%s' "$row" | jq -r '.task_name')"
+			  field_project_id="$(printf '%s' "$row" | jq -r '.project_id')"
+			  field_project_name="$(printf '%s' "$row" | jq -r '.project_name')"
+			  field_project_code="$(printf '%s' "$row" | jq -r '.project_code')"
+			  field_client_id="$(printf '%s' "$row" | jq -r '.client_id')"
+			  field_client_name="$(printf '%s' "$row" | jq -r '.client_name')"
 			  s="$task_assignment_separator"
 			  printf "%s$s%s$s%s$s%s$s%s$s%s$s%s\n" \
-				"$field_client_id" \
-				"$field_project_id" \
-				"$field_task_id" \
+				"cid:$field_client_id" \
+				"pid:$field_project_id" \
+				"tid:$field_task_id" \
 				"$field_client_name" \
 				"$field_project_code" \
 				"$field_project_name" \
 				"$field_task_name" \
 				>> "$assignment_cache_file"
-		  done
+			done
 		  cat "$assignment_cache_file" |
 			sort -t"$task_assignment_separator" -k4 -k5 -k6 \
 			> "$assignment_cache_file.sorted"
 		  mv "$assignment_cache_file.sorted" "$assignment_cache_file"
     }
-
     cat "$assignment_cache_file"
 }
 print_task_assignments() { list_and_cache_task_assignments | sed 's/'$task_assignment_separator'/ | /g'; }
