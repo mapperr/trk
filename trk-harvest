@@ -26,6 +26,7 @@ usage() {
 
     $s a <date_arg> <hours> <task_id> <notes>
         adds a new entry to the harvest.
+        task_id can be a task id or in the form <task_id>-<project_id>
 
     $s d <entry_id>
         deletes a time entry by id from harvest.
@@ -213,14 +214,17 @@ _add_time_entry() {
     taskid="$3"
     notes="$4"
     _dbg "adding entry: [$*]"
-    projectid=$(list_and_cache_task_assignments | grep "tid:$taskid" | cut -d"$task_assignment_separator" -f2 | sed 's/pid://' | tr -d ' ')
-    _dbg "found project id: [$projectid]"
-    curl -s --fail -o /dev/null "https://api.harvestapp.com/v2/time_entries" \
+    tid="$taskid"
+    printf '%s' "$taskid" | grep -qF '-' && tid="$(printf '%s' "$taskid" | cut -d'-' -f1)" && pid="$(printf '%s' "$taskid" | cut -d'-' -f2)"
+    [ -z "$pid" ] && pid=$(list_and_cache_task_assignments | grep "tid:$taskid" | cut -d"$task_assignment_separator" -f2 | sed 's/pid://' | tr -d ' ')
+    _dbg "found project id: [$pid]"
+    printf '%d' "$pid" >/dev/null 2>&1 || _err "found incorrect project id for task [$taskid]: [$pid]"
+    curl --fail "https://api.harvestapp.com/v2/time_entries" \
       -H "Authorization: Bearer $TRK_HARVEST_ACCESS_TOKEN" \
       -H "Harvest-Account-Id: $TRK_HARVEST_ACCOUNT_ID" \
       -X POST \
       -H "Content-Type: application/json" \
-      -d '{"user_id":'"$TRK_HARVEST_USER_ID"',"project_id":'"$projectid"',"task_id":'"$taskid"',"spent_date":"'"$day"'","hours":'"$hours"',"notes":"'"$notes"'"}' || return 1
+      -d '{"user_id":'"$TRK_HARVEST_USER_ID"',"project_id":'"$pid"',"task_id":'"$tid"',"spent_date":"'"$day"'","hours":'"$hours"',"notes":"'"$notes"'"}' >>"$logfile" 2>&1 || return 1
 }
 add_time_entry() {
     day="$1"
@@ -330,7 +334,7 @@ sync() {
             t="$(echo "$p" | sed 's/^+ //')"
             day="$(echo "$t" | cut -d' ' -f1)"
             hours="$(echo "$t" | cut -d' ' -f2)"
-            taskid="$(echo "$t" | grep -o "$harvest_trk_tag:[0-9]*" | sed "s/$harvest_trk_tag://" | tr -d ' ')"
+            taskid="$(echo "$t" | grep -o "$harvest_trk_tag:[0-9\-]*" | sed "s/$harvest_trk_tag://" | tr -d ' ')"
             notes="$(echo "$t" | cut -d' ' -f3- | sed 's/#.[^ ]*//g' | sed 's/^ *//' | sed 's/ *$//')"
             add_time_entry "$day" "$hours" "$taskid" "$notes"
         fi
