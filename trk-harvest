@@ -1,5 +1,5 @@
 #! /bin/sh
-version="0.1.0"
+version="0.2.0"
 trkfile="${TRK_FILE:-$HOME/.trkfile}"
 trk_workday_hours="${TRK_WORKDAY_HOURS:-8}"
 editor="${EDITOR:-vi}"
@@ -18,11 +18,11 @@ usage() {
         date_arg is any valid value the 'date' command can take, e.g. '-', 'today', 'yesterday', etc.
         hours spent must be a number and can be decimal: 1, 4.25, 0.5, etc.
 
-    $s t [column_opts]
-    $s tt [column_opts]
+    $s t [grep_pattern]
+    $s tt [grep_pattern]
         get harvest tasks assigned to your user
         the task list is cached in your tmpdir, use 'tt' to force-refresh it
-        the output is produced by the 'column' linux command, you can pass options to it
+        you can pass a grep_pattern to filter out the output
 
     $s a <date_arg> <hours> <task_id> <notes>
         adds a new entry to the harvest.
@@ -205,8 +205,8 @@ EOF
     }
     cat "$assignment_cache_file"
 }
-print_task_assignments() { list_and_cache_task_assignments | sed 's/'$task_assignment_separator'/ | /g'; }
-print_task_assignments_refresh() { list_and_cache_task_assignments "refresh" | sed 's/'$task_assignment_separator'/ | /g'; }
+print_task_assignments() { p="$@"; [ -z "$p" ] && p="^" ; list_and_cache_task_assignments | sed 's/'$task_assignment_separator'/ | /g' | grep -i "$p"; }
+print_task_assignments_refresh() { p="$@"; [ -z "$p" ] && p="^" ; list_and_cache_task_assignments "refresh" | sed 's/'$task_assignment_separator'/ | /g' | grep -i "$p"; }
 _add_time_entry() {
     day="$1"
     hours="$2"
