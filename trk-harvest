@@ -266,10 +266,8 @@ _compare_trk_and_harvest_entry() {
     hhours="$(echo "$h" | cut -d' ' -f2 | sed 's/\.0$//')"
     htaskid="$(echo "$h" | grep -o 'tid:[0-9]*' | sed 's/tid://' | tr -d ' ')"
     hprojid="$(echo "$h" | grep -o 'pid:[0-9]*' | sed 's/pid://' | tr -d ' ')"
-    hnotes="$(echo "$h" | cut -d' ' -f6-)"
-
+    hnotes="$(echo "$h" | cut -d' ' -f6- | sed "s/$hprojid//" |  sed 's/^ *//' | sed 's/ *$//')"
     _dbg "comparing: [$tday] = [$hday] ; [$thours] = [$hhours] ; [$ttaskid] = [$htaskid] ; [$tprojid] = [$hprojid] ; [$tnotes] = [$hnotes] ;"
-
     [ "$tday" = "$hday" ] &&
     [ "$thours" = "$hhours" ] &&
     [ "$ttaskid" = "$htaskid" ] &&
