@@ -1,5 +1,6 @@
 #! /bin/sh
 version="0.5.0"
+dependencies="date grep awk m4"
 trkfile="${TRK_FILE:-$HOME/.trkfile}"
 trk_workday_hours="${TRK_WORKDAY_HOURS:-8}"
 editor="${EDITOR:-vi}"
@@ -276,7 +277,12 @@ report() {
     echo
     report_records "$tmpfile_report"
 }
+_check_dependencies() {
+    missing=''; for d in $dependencies; do _dbg "checking dep [$d]"; command -v "$d">/dev/null; [ $? -ne 0 ] && missing="$missing $d"; done
+    [ -n "$missing" ] && echo "missing dependencies: $missing" >&2 && exit 1
+}
 main() {
+    _check_dependencies
     cmd="$1"; shift
     case $cmd in
         t) start_stop_timer "$@";;

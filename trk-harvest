@@ -1,5 +1,6 @@
 #! /bin/sh
 version="0.2.0"
+dependencies="curl jq"
 trkfile="${TRK_FILE:-$HOME/.trkfile}"
 trk_workday_hours="${TRK_WORKDAY_HOURS:-8}"
 editor="${EDITOR:-vi}"
@@ -350,8 +351,12 @@ EOF
     wait
     _info "sync complete"
 }
-
+_check_dependencies() {
+    missing=''; for d in $dependencies; do _dbg "checking dep [$d]"; command -v "$d">/dev/null; [ $? -ne 0 ] && missing="$missing $d"; done
+    [ -n "$missing" ] && echo "missing dependencies: $missing" >&2 && exit 1
+}
 main() {
+    _check_dependencies
     cmd="$1"; shift
     case $cmd in
         t) print_task_assignments "$@";;
