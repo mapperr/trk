@@ -273,7 +273,9 @@ report() {
     [ -z "$1" ] && [ ! -t 0 ] && cat >"$tmpfile_report" && _info "building report from stdin"
     _dbg "list args input: $*"; set -- "$(_calculate_grep_pattern "$*")"; _dbg "computed input: $*"
     [ -n "$1" ] && [ -t 0 ] && cat "$trkfile" | grep "$*" >"$tmpfile_report" &&
-        _info "building report for trkfile $trkfile with filter [$*]"
+        _info "building report"
+        _info "trkfile: $trkfile"
+        _info "filter: [$*]"
     echo
     report_records "$tmpfile_report"
 }
