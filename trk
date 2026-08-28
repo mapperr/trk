@@ -1,304 +1,849 @@
-#! /bin/sh
-version="0.5.0"
-dependencies="date grep awk m4"
+#!/bin/sh
+
+version="0.6.0"
 trkfile="${TRK_FILE:-$HOME/.trkfile}"
 trk_workday_hours="${TRK_WORKDAY_HOURS:-8}"
-editor="${EDITOR:-vi}"
-tmpdir="$TMPDIR:-/tmp"
+editor="${VISUAL:-${EDITOR:-vi}}"
 trk_timer_file="$trkfile.timer"
+scriptname=${0##*/}
+tab=$(printf '\t')
+
+# Descriptions and tags must never undergo pathname expansion. Files created by
+# trk contain personal data and should be private unless the user changes them.
+set -f
+umask 077
+LC_NUMERIC=C
+export LC_NUMERIC
 
 usage() {
-    s="$(basename $0)"
-    printf "Usage [v$version]:
-    $s t <description>
-        starts a timer for a new entry
-        eventually terminates the previously active timer
-    $s t
-        terminates the current timer
-    $s tt [notification_interval_in_minutes, default:5]
-        starts a long running process that notifies regurarly if there is an active timer
+    printf '%s\n' "Usage [v$version]:
+    $scriptname t [description]
+        without a description, stops the active timer;
+        with a description, stops the active timer if necessary and starts a new one
+    $scriptname start <description>
+    $scriptname stop
+    $scriptname switch <description>
+    $scriptname status
+        explicit timer commands
+    $scriptname tt [notification_interval_in_minutes, default: 5]
+        notifies regularly while a timer is active
 
-    $s a <date_arg> <hours> <description>
-        adds a new entry to the trk file.
-        date_arg is any valid value the 'date' command can take, e.g. '-', 'today', 'yesterday', etc.
-        hours spent must be a number and can be decimal: 1, 4.25, 0.5, etc.
+    $scriptname a <date_arg> <hours> <description>
+        adds a record; date_arg is accepted by GNU date, e.g. -, today, yesterday
 
-    $s l [grep_pattern | date_arg]
-        prints trk records to stdout, filtering records with grep_pattern or a date_arg if passed.
-        by default it reads the trk file, but it can alternatively take input from stdin
+    $scriptname l [--stdin] [--grep|--date] [filter]
+        lists records, optionally filtered by a grep pattern or date expression
+    $scriptname r [--stdin] [--grep|--date] [filter]
+        reports total time, chargeability and per-tag totals
+        input defaults to TRK_FILE; a real pipe/redirection is detected automatically
+    $scriptname check [--stdin]
+        validates records and tags
 
-    $s r [grep_pattern | date_arg]
-        shows an aggregate of trk records with per-tag totals,
-        filtering records with grep_pattern or a date_arg if passed.
-        by default it reads the trk file, but it can alternatively take input from stdin
-        it shows a chargeability percentage based on the #billable tag
-
-    $s e
-        edits the trk file with your $EDITOR
-
-    $s g [git cmds/args]
-        executes git commands in the trk file directory, e.g.: trk g pull
-    $s y [commit msg]
-        executes git add, commit -m 'commit msg' (or 'sync'), pull and push in the tsk directory
-    $s h
-        shows extended help
-"
+    $scriptname e
+        edits the trk file with VISUAL or EDITOR
+    $scriptname g [git command/arguments]
+        runs git in the trk file directory
+    $scriptname y [commit message]
+        commits only the trk file, pulls with rebase and pushes
+    $scriptname h
+        shows extended help"
 }
+
 helpmsg() {
-    usage; echo
-    printf "trkfile:
-    the trk file contains a list of trk records, one per line.
-    the trk record format is simply: DAY HOURS DESCRIPTION (separated by exactly 1 blank space)
-    where: DAY: YYYY-MM-DD, HOURS: a floating point number, DESCRIPTION: a one-line note with optional tags (see below)
-    so, e.g.: '2025-01-23 4.5 #billable #client:companyA #project:super_webapp work on backend feature X'
+    usage
+    printf '\n%s\n' "Record format:
+    YYYY-MM-DD HOURS DESCRIPTION
 
-tags:
-    descriptions can contain 'tags' in the form of #tag or #tag:value
-    (tag and value can contain only letters, numbers, undescores '_' and dashes '-', without blank spaces).
-    those tags will result in the reports as additional aggregates or can be used by external integrations.
+    Fields are separated by one space. HOURS is a decimal number. DESCRIPTION
+    is a single line and can contain tags such as:
 
-special-tags:
-	trk report compute your chargeability based on the #billable tag
+    #billable #client:company-a #project:super_webapp #hid:25875920
 
-filtering:
-    the l[ist] and r[eport] commands optionally take a grep pattern or a date arg as input.
-    the grep pattern is obviously grep-compatible a regex.
-    The date arg is a value that is a valid 'date' command 'DATE STRING': something like yesterday, 7 days ago, etc. 
-    $s tries to be smart, e.g.: if the date arg contains 'month' or 'week', then it adjust the resulting filter to grep the entire month/week.
-    
-env vars:
-    - TRK_DEBUG: set it to whatever value to show debug informations [default: unset, cur: ${TRK_DEBUG-unset}]
-    - TRK_FILE: the trk file you are working on [default: $HOME/.trkfile, cur: $trkfile]
-    - TRK_WORKDAY_HOURS: workday hours [default: 8, cur: $trk_workday_hours]
-    - TRK_UNFRIENDLY: prints spent time in hours with 2 decimals, useful for sorting, parsing, etc. [default: unset, cur: ${TRK_UNFRIENDLY-unset}]
-    - TRK_TAGS: trk will prepend the content of this var to the record description,
-        useful if, e.g., you are working on a specific client/project all day [default: unset, cur: ${TRK_TAGS-unset}]
-"
+Tags:
+    A tag is #name or #name:value. Names and values contain letters, numbers,
+    underscores and dashes. Tags are whitespace-separated tokens.
+    #billable is used to calculate chargeability.
+
+Filtering:
+    Without options, a valid GNU date expression is converted to a date filter;
+    any other value is treated as a basic grep regular expression.
+    Expressions containing 'week', 'month' or 'year' select the whole period.
+    --grep forces regular-expression interpretation.
+    --date forces date interpretation.
+    --stdin forces stdin. It is useful in non-interactive environments, although
+    pipes and regular-file redirections are normally detected automatically.
+
+Examples:
+    $scriptname a today 2.5 '#billable #client:acme implementation'
+    $scriptname l 'this week'
+    $scriptname l --grep '#client:acme.*#project:web'
+    $scriptname l 'this month' | $scriptname r
+    $scriptname r --stdin '#billable' < exported-records
+    $scriptname check
+
+Environment:
+    TRK_DEBUG          enable diagnostic messages [current: ${TRK_DEBUG:-unset}]
+    TRK_FILE           record file [current: $trkfile]
+    TRK_WORKDAY_HOURS  hours represented by one friendly-format day [current: $trk_workday_hours]
+    TRK_UNFRIENDLY     output report times as decimal hours with two decimals
+    TRK_TAGS           tags prepended once to newly added records or timers
+    VISUAL, EDITOR     editor command [current: $editor]"
 }
-_err() { printf "%s: error: %s\n" "$(basename "$0")" "$1" >&2; exit 1; }
-_warn() { printf "%s: warn: %s\n" "$(basename "$0")" "$1" >&2; }
-_info() { printf "%s: %s\n" "$(basename "$0")" "$1" >&2; }
-_dbg() { [ "$TRK_DEBUG" ] && printf "%s: debug: %s\n" "$(basename "$0")" "$1" >&2; return 0; }
-_mktemp() { tmpdir=/dev/shm; [ -w /dev/shm ] || tmpdir=${TMPDIR:-/tmp}; echo "mkstemp($tmpdir/XXXXXXXX)" | m4; }
-_today() { date '+%Y-%m-%d'; }
-_validate_date() { date -d "$(printf "$1")" >/dev/null 2>&1;}
-_validate_hours() { printf "$1" | grep -qE '^[+-]?[0-9]+(\.[0-9]+)?$';}
-_is_timer_active() { [ -f "$trk_timer_file" ]; }
-_get_rounded_seconds_from_hours() { awk "BEGIN { print $1 * 3600 }" | xargs printf '%.0f\n'; }
-_get_friendly_time_from_hours() {
-    hours_spent="$1"
-    seconds_spent="$(_get_rounded_seconds_from_hours "$hours_spent")"
-    timeline="${seconds_spent}s"
-    minutes_spent=$(expr $seconds_spent / 60)
-    hours_spent=$(expr $minutes_spent / 60)
-    days_spent=$(expr $hours_spent / $trk_workday_hours)
-    if [ $hours_spent -ge $trk_workday_hours ]; then
-        days_in_hours=$(expr $days_spent \* $trk_workday_hours)
-        hours_remainder=$(expr $hours_spent - $days_in_hours)
-        hours_in_minutes=$(expr $hours_spent \* 60)
-        minutes_remainder=$(expr $minutes_spent - $hours_in_minutes)
-        timeline="${days_spent}d"
-        test $hours_remainder -gt 0 &&
-            timeline="${days_spent}d${hours_remainder}h"
-        test $minutes_remainder -gt 0 &&
-            timeline="${days_spent}d${minutes_remainder}m"
-        test $hours_remainder -gt 0 &&
-            test $minutes_remainder -gt 0 &&
-            timeline="${days_spent}d${hours_remainder}h${minutes_remainder}m"
-    elif [ $minutes_spent -ge 60 ]; then
-        hours_in_minutes=$(expr $hours_spent \* 60)
-        minutes_remainder=$(expr $minutes_spent - $hours_in_minutes)
-        timeline="${hours_spent}h"
-        test $minutes_remainder -gt 0 &&
-            timeline="${hours_spent}h${minutes_remainder}m"
-    elif [ $seconds_spent -ge 60 ]; then
-        timeline="${minutes_spent}m"
-    fi
-    echo "$timeline"
+
+_err() {
+    printf '%s: error: %s\n' "$scriptname" "$1" >&2
+    exit 1
 }
-_week_from_date() {
-    y=${1%%-*}; r=${1#*-}; m=${r%%-*}; d=${r#*-}
-    # force base 10 to avoid leading-zero octal
-    m=${m#0}; d=${d#0}
-    dow(){ y=$1;m=$2;d=$3; [ $m -lt 3 ]&&m=$((m+12)) y=$((y-1))
-        K=$((y%100));J=$((y/100))
-        h=$(( (d+(13*(m+1))/5+K+K/4+J/4+5*J)%7 ))
-        case $h in 2)echo 1;;3)echo 2;;4)echo 3;;5)echo 4;;6)echo 5;;0)echo 6;;1)echo 7;;esac; }
-    dim(){ case "$2" in
-      1|3|5|7|8|10|12) echo 31;;
-      4|6|9|11) echo 30;;
-      2) y=$1; ([ $((y%400)) -eq 0 ] || { [ $((y%4)) -eq 0 ] && [ $((y%100)) -ne 0 ]; }) && echo 29 || echo 28;;
-      *) echo 30;; # fallback
-    esac;}
-    next(){ y=$1;m=$2;d=$3; d=$((d+1)); x=$(dim "$y" "$m"); [ -z "$x" ] && x=31
-        if [ "$d" -gt "$x" ]; then d=1; m=$((m+1)); [ "$m" -gt 12 ] && m=1 && y=$((y+1)); fi
-        printf "%04d-%02d-%02d\n" "$y" "$m" "$d"; }
-    prev(){ y=$1;m=$2;d=$3; d=$((d-1)); if [ "$d" -lt 1 ]; then m=$((m-1)); [ "$m" -lt 1 ] && m=12 && y=$((y-1)); d=$(dim "$y" "$m"); fi
-        printf "%04d-%02d-%02d\n" "$y" "$m" "$d"; }
-    w=$(dow "$y" "$m" "$d")
-    while [ "$w" -gt 1 ]; do x=$(prev "$y" "$m" "$d"); y=${x%%-*}; r=${x#*-}; m=${r%%-*}; d=${r#*-}; 
-    m=${m#0}; d=${d#0}; w=$((w-1)); done
-    i=0; while [ "$i" -lt 7 ]; do
-        printf "%04d-%02d-%02d\n" "$y" "$m" "$d"
-        x=$(next "$y" "$m" "$d"); y=${x%%-*}; r=${x#*-}; m=${r%%-*}; d=${r#*-};
-        m=${m#0}; d=${d#0}; i=$((i+1))
+
+_warn() {
+    printf '%s: warn: %s\n' "$scriptname" "$1" >&2
+}
+
+_info() {
+    printf '%s: %s\n' "$scriptname" "$1" >&2
+}
+
+_dbg() {
+    [ -n "${TRK_DEBUG:-}" ] &&
+        printf '%s: debug: %s\n' "$scriptname" "$1" >&2
+    return 0
+}
+
+_require() {
+    command -v "$1" >/dev/null 2>&1 || _err "missing '$1' command"
+}
+
+_validate_date() {
+    date -d "$(printf '%s' "$1")" >/dev/null 2>&1
+}
+
+_normalize_date() {
+    date -d "$1" '+%Y-%m-%d'
+}
+
+_validate_record_date() {
+    printf '%s\n' "$1" |
+        grep -Eq '^[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]$' || return 1
+    normalized=$(_normalize_date "$1" 2>/dev/null) || return 1
+    [ "$normalized" = "$1" ]
+}
+
+_validate_hours() {
+    printf '%s\n' "$1" |
+        grep -Eq '^[+-]?[0-9]+([.][0-9]+)?$'
+}
+
+_validate_positive_number() {
+    _validate_hours "$1" || return 1
+    awk -v value="$1" 'BEGIN { exit !(value > 0) }'
+}
+
+_validate_tag() {
+    printf '%s\n' "$1" |
+        grep -Eq '^#[[:alnum:]_][[:alnum:]_-]*(:[[:alnum:]_][[:alnum:]_-]*)?$'
+}
+
+_validate_env_tags() {
+    for tag_word in ${TRK_TAGS:-}; do
+        _validate_tag "$tag_word" ||
+            _err "TRK_TAGS contains an invalid tag: [$tag_word]"
     done
 }
-_calculate_grep_pattern() {
-    ! _validate_date "$*" && printf '%s' "$*" && return
-    if echo "$*" | grep year>/dev/null; then printf '%s' "^$(date -d "$*" "+%Y")"; return
-    elif echo "$*" | grep month>/dev/null; then printf '%s' "^$(date -d "$*" "+%Y-%m")"; return
-    elif echo "$*" | grep week>/dev/null; then
-        date_formatted="$(date -d "$*" "+%Y-%m-%d")"
-        week_days="$(_week_from_date "$date_formatted")"
-        grep_pattern="^$(for d in $week_days; do printf '\(%s\)\|' "$d"; done | sed 's/\\|$//')"
-        printf '%s' "$(printf '%s' "$grep_pattern")"; return
-    else printf '%s' "^$(date -d "$*" "+%Y-%m-%d")"; return; fi
+
+_validate_description_tags() {
+    description_to_check=$1
+    for tag_word in $description_to_check; do
+        case $tag_word in
+            \#*) _validate_tag "$tag_word" || return 1 ;;
+        esac
+    done
+    return 0
 }
-edit_trkfile() { $editor "$trkfile"; }
+
+_validate_description() {
+    [ -n "$1" ] || return 1
+    case $1 in
+        *"$tab"*) return 1 ;;
+        *'
+'*) return 1 ;;
+    esac
+    _validate_description_tags "$1"
+}
+
+_validate_config() {
+    _validate_positive_number "$trk_workday_hours" ||
+        _err "TRK_WORKDAY_HOURS must be greater than zero: [$trk_workday_hours]"
+}
+
+_is_timer_active() {
+    [ -f "$trk_timer_file" ]
+}
+
+_ensure_trk_directory() {
+    trk_directory=$(dirname "$trkfile")
+    [ -d "$trk_directory" ] ||
+        _err "trk file directory does not exist: [$trk_directory]"
+}
+
+_append_record() {
+    record_day=$1
+    record_hours=$2
+    record_description=$3
+    record_line="$record_day $record_hours $record_description"
+    _ensure_trk_directory
+    printf '%s\n' "$record_line" >>"$trkfile" ||
+        _err "cannot append to trk file: [$trkfile]"
+    _info "record added: $record_line"
+}
+
 add_record() {
-    day="$1"
-    hours="$2"
-    [ -z "$3" ] && usage && exit 1
-    shift; shift
-    ! _validate_date "$day" &&
-        _err "date [$day] is not a valid date" && exit 1
-    day="$(date -d "$day" '+%Y-%m-%d')"
-    ! _validate_hours "$hours" &&
-        _err "hours spent [$hours] is not a valid number" && exit 1
-    echo "$day $hours ${TRK_TAGS}${TRK_TAGS+ }$*" >> "$trkfile"
-    _info "record added: $(tail -n1 "$trkfile")"
-}
-_get_timer_hours() {
-    start_ts="$(cat "$trk_timer_file" | cut -d' ' -f1)"
-    now_ts="$(date '+%s')"
-    diff="$(expr $now_ts - $start_ts)"
-    hours="$(awk "BEGIN { print $diff / 3600 }")"
-    hours="$(printf '%.2f\n' "$hours")"
-    printf '%s' "$hours"
-}
-start_stop_timer() {
-    _is_timer_active
-    timer_active=$?
-    if [ $timer_active -eq 0 ]; then
-        description="$(cat "$trk_timer_file" | cut -d' ' -f2-)"
-        [ -z "$description" ] &&
-            _warn "this timer has no description, edit it later!" &&
-            description="add a description"
-        hours="$(_get_timer_hours)"
-        if [ "$hours" = "0.00" ]; then _warn "nothing to add, timer lasted less than a minute"
-        else add_record "-" "$hours" "$description"; fi
-        rm -f "$trk_timer_file"
-    fi
-    if [ -n "$1" ]; then echo "$(date '+%s') ${TRK_TAGS}${TRK_TAGS+ }$*" >"$trk_timer_file"
-        _info "started new timer: ${TRK_TAGS}${TRK_TAGS+ }$*"
-    else [ $timer_active -ne 0 ] && _err "add some description to the timer" && return 1; fi
+    [ "$#" -ge 3 ] || {
+        usage >&2
+        exit 1
+    }
 
+    day=$1
+    hours=$2
+    shift 2
+    description=$*
+
+    _validate_date "$day" || _err "date [$day] is not valid"
+    day=$(_normalize_date "$day") || _err "cannot normalize date [$day]"
+    _validate_hours "$hours" || _err "hours [$hours] is not a valid number"
+    _validate_env_tags
+
+    if [ -n "${TRK_TAGS:-}" ]; then
+        description="$TRK_TAGS $description"
+    fi
+    _validate_description "$description" ||
+        _err "description is empty, multiline, or contains an invalid tag"
+
+    _append_record "$day" "$hours" "$description"
 }
+
+_friendly_seconds() {
+    friendly_seconds=$1
+    friendly_sign=
+    if [ "$friendly_seconds" -lt 0 ]; then
+        friendly_sign=-
+        friendly_seconds=$((-friendly_seconds))
+    fi
+
+    workday_seconds=$(awk -v hours="$trk_workday_hours" \
+        'BEGIN { printf "%.0f", hours * 3600 }')
+    friendly_days=$((friendly_seconds / workday_seconds))
+    friendly_remainder=$((friendly_seconds % workday_seconds))
+    friendly_hours=$((friendly_remainder / 3600))
+    friendly_remainder=$((friendly_remainder % 3600))
+    friendly_minutes=$((friendly_remainder / 60))
+    friendly_secs=$((friendly_remainder % 60))
+    friendly_value=
+
+    [ "$friendly_days" -gt 0 ] && friendly_value="${friendly_value}${friendly_days}d"
+    [ "$friendly_hours" -gt 0 ] && friendly_value="${friendly_value}${friendly_hours}h"
+    [ "$friendly_minutes" -gt 0 ] && friendly_value="${friendly_value}${friendly_minutes}m"
+    if [ "$friendly_secs" -gt 0 ] || [ -z "$friendly_value" ]; then
+        friendly_value="${friendly_value}${friendly_secs}s"
+    fi
+    printf '%s%s\n' "$friendly_sign" "$friendly_value"
+}
+
+_hours_from_seconds() {
+    awk -v seconds="$1" '
+        BEGIN {
+            value = sprintf("%.4f", seconds / 3600)
+            sub(/0+$/, "", value)
+            sub(/[.]$/, "", value)
+            print value
+        }'
+}
+
+_read_timer() {
+    [ -r "$trk_timer_file" ] || return 1
+    timer_line=
+    IFS= read -r timer_line <"$trk_timer_file" || [ -n "$timer_line" ] || return 2
+
+    case $timer_line in
+        *"$tab"*"$tab"*)
+            old_ifs=$IFS
+            IFS=$tab
+            read -r timer_start timer_day timer_description <<EOF
+$timer_line
+EOF
+            IFS=$old_ifs
+            ;;
+        *)
+            # Compatibility with the 0.5 timer format: EPOCH DESCRIPTION.
+            timer_start=${timer_line%% *}
+            if [ "$timer_line" = "$timer_start" ]; then
+                timer_description=
+            else
+                timer_description=${timer_line#* }
+            fi
+            timer_day=$(date -d "@$timer_start" '+%Y-%m-%d' 2>/dev/null) || return 2
+            ;;
+    esac
+
+    case $timer_start in
+        ''|*[!0-9]*) return 2 ;;
+    esac
+    _validate_record_date "$timer_day" || return 2
+    [ -n "$timer_description" ] || return 2
+    return 0
+}
+
+_write_timer() {
+    timer_start=$1
+    timer_day=$2
+    timer_description=$3
+    _ensure_trk_directory
+    timer_tmp="$trk_timer_file.$$"
+
+    printf '%s\t%s\t%s\n' "$timer_start" "$timer_day" "$timer_description" >"$timer_tmp" || {
+        rm -f "$timer_tmp"
+        _err "cannot write timer file"
+    }
+    mv "$timer_tmp" "$trk_timer_file" || {
+        rm -f "$timer_tmp"
+        _err "cannot activate timer file"
+    }
+}
+
+_start_timer() {
+    [ "$#" -gt 0 ] || _err "add a description to the timer"
+    description=$*
+    _validate_env_tags
+    if [ -n "${TRK_TAGS:-}" ]; then
+        description="$TRK_TAGS $description"
+    fi
+    _validate_description "$description" ||
+        _err "description is empty, multiline, or contains an invalid tag"
+
+    timer_start=$(date '+%s')
+    timer_day=$(date '+%Y-%m-%d')
+    _write_timer "$timer_start" "$timer_day" "$description"
+    _info "started new timer: $description"
+}
+
+_stop_timer() {
+    _is_timer_active || _err "there is no active timer"
+    _read_timer || _err "timer file is malformed: [$trk_timer_file]"
+
+    timer_stop=$(date '+%s')
+    timer_total_seconds=$((timer_stop - timer_start))
+    [ "$timer_total_seconds" -ge 0 ] || _err "system clock precedes timer start"
+
+    if [ "$timer_total_seconds" -lt 60 ]; then
+        rm -f "$trk_timer_file" || _err "cannot remove timer file"
+        _warn "nothing added: timer lasted less than one minute"
+        return 0
+    fi
+
+    timer_records=
+    timer_record_count=0
+    segment_start=$timer_start
+    while [ "$segment_start" -lt "$timer_stop" ]; do
+        segment_day=$(date -d "@$segment_start" '+%Y-%m-%d') ||
+            _err "cannot determine timer record date"
+        following_day=$(date -d "$segment_day + 1 day" '+%Y-%m-%d') ||
+            _err "cannot determine next timer date"
+        next_midnight=$(date -d "$following_day 00:00:00" '+%s') ||
+            _err "cannot determine next midnight"
+        [ "$next_midnight" -gt "$segment_start" ] ||
+            _err "cannot split timer at midnight"
+
+        segment_stop=$timer_stop
+        [ "$next_midnight" -lt "$segment_stop" ] && segment_stop=$next_midnight
+        segment_seconds=$((segment_stop - segment_start))
+        segment_hours=$(_hours_from_seconds "$segment_seconds")
+        segment_record="$segment_day $segment_hours $timer_description"
+        if [ -z "$timer_records" ]; then
+            timer_records=$segment_record
+        else
+            timer_records="$timer_records
+$segment_record"
+        fi
+        timer_record_count=$((timer_record_count + 1))
+        segment_start=$segment_stop
+    done
+
+    _ensure_trk_directory
+    printf '%s\n' "$timer_records" >>"$trkfile" ||
+        _err "cannot append timer records to trk file"
+    rm -f "$trk_timer_file" || _err "records saved but timer file could not be removed"
+
+    timer_total_friendly=$(_friendly_seconds "$timer_total_seconds")
+    _info "timer stopped: $timer_total_friendly, $timer_record_count record(s) added"
+}
+
+start_stop_timer() {
+    if _is_timer_active; then
+        _stop_timer
+        [ "$#" -gt 0 ] && _start_timer "$@"
+    else
+        [ "$#" -gt 0 ] || _err "there is no active timer; add a description to start one"
+        _start_timer "$@"
+    fi
+}
+
+timer_status() {
+    if ! _is_timer_active; then
+        printf '%s\n' 'timer: inactive'
+        return 0
+    fi
+    _read_timer || _err "timer file is malformed: [$trk_timer_file]"
+    timer_now=$(date '+%s')
+    timer_seconds=$((timer_now - timer_start))
+    [ "$timer_seconds" -ge 0 ] || _err "system clock precedes timer start"
+    if [ -n "${TRK_UNFRIENDLY:-}" ]; then
+        timer_elapsed=$(awk -v seconds="$timer_seconds" 'BEGIN { printf "%.2f", seconds / 3600 }')
+    else
+        timer_elapsed=$(_friendly_seconds "$timer_seconds")
+    fi
+    printf 'timer: %s %s\n' "$timer_elapsed" "$timer_description"
+}
+
+_notify_on_exit() {
+    notify-send -a trk -u low -t 4000 'trk timer' 'timer notification stopped' \
+        >/dev/null 2>&1 || :
+}
+
 start_timer_notification() {
-    interval_in_minutes="${1-5}"
-    trap "notify-send -a trk -u low -t 4000 'trk timer' 'timer notification stopped'" EXIT
-    ! command -v notify-send >/dev/null &&
-        _err "missing 'notify-send' command, cannot send notifications" &&
-        exit 1; _dbg "notification interval set to $interval_in_minutes minutes"
-    ts_lastcheck="$(date '+%s')"
-    while true; do
-        _dbg "waiting a minute"
-        ts_check="$ts_lastcheck"
-        while [ "$(expr $ts_check - $ts_lastcheck)" -le 60 ]; do sleep 1; ts_check="$(date '+%s')"; done 
-        ts_lastcheck="$(date '+%s')"
-        _is_timer_active || continue
-        timer_elapsed="$(_get_timer_hours)"
-        elapsed_minutes="$(_get_rounded_seconds_from_hours "$timer_elapsed" | xargs -I% expr % / 60 )"
-        _dbg "timer_elapsed: $timer_elapsed ; elapsed_minutes: $elapsed_minutes"
-        [ "$elapsed_minutes" -eq 0 ] && continue
-        [ "$(expr "$elapsed_minutes" % "$interval_in_minutes")" -ne 0 ] && continue
-        _dbg "notifying"
-        [ -z "$TRK_UNFRIENDLY" ] && timer_elapsed="$(_get_friendly_time_from_hours "$timer_elapsed")"
-        description="$(cat "$trk_timer_file" | cut -d' ' -f2-)"
-        notify-send -a trk -u low -t 4000 "trk timer: $timer_elapsed" "$description"
+    interval_minutes=${1:-5}
+    case $interval_minutes in
+        ''|*[!0-9]*) _err "notification interval must be a positive integer" ;;
+    esac
+    [ "$interval_minutes" -gt 0 ] ||
+        _err "notification interval must be greater than zero"
+    _require notify-send
+
+    interval_seconds=$((interval_minutes * 60))
+    notification_timer_start=
+    next_notification=0
+    trap '_notify_on_exit' 0
+    trap 'exit 0' HUP INT TERM
+    _dbg "notification interval: $interval_minutes minute(s)"
+
+    while :; do
+        if ! _is_timer_active; then
+            notification_timer_start=
+            sleep 60
+            continue
+        fi
+        _read_timer || _err "timer file is malformed: [$trk_timer_file]"
+        notification_now=$(date '+%s')
+
+        if [ "$notification_timer_start" != "$timer_start" ]; then
+            notification_timer_start=$timer_start
+            next_notification=$((timer_start + interval_seconds))
+        fi
+
+        if [ "$notification_now" -ge "$next_notification" ]; then
+            elapsed_seconds=$((notification_now - timer_start))
+            if [ -n "${TRK_UNFRIENDLY:-}" ]; then
+                elapsed=$(awk -v seconds="$elapsed_seconds" \
+                    'BEGIN { printf "%.2f", seconds / 3600 }')
+            else
+                elapsed=$(_friendly_seconds "$elapsed_seconds")
+            fi
+            notify-send -a trk -u low -t 4000 "trk timer: $elapsed" "$timer_description"
+            while [ "$next_notification" -le "$notification_now" ]; do
+                next_notification=$((next_notification + interval_seconds))
+            done
+        fi
+
+        sleep_seconds=$((next_notification - notification_now))
+        [ "$sleep_seconds" -gt 60 ] && sleep_seconds=60
+        [ "$sleep_seconds" -lt 1 ] && sleep_seconds=1
+        sleep "$sleep_seconds"
     done
 }
-list_records() {
-    [ -z "$1" ] && [ -t 0 ] && cat "$trkfile" | grep -v '^#' && return 0
-    [ -z "$1" ] && [ ! -t 0 ] && cat | grep -v '^#' && return 0
-    _dbg "list args input: $*"; set -- "$(_calculate_grep_pattern "$*")"; _dbg "computed input: $*"
-    [ -n "$1" ] && [ -t 0 ] && cat "$trkfile" | grep -v '^#' | grep "$*" && return 0
-    [ -n "$1" ] && [ ! -t 0 ] && cat | grep -v '^#' | grep "$*" && return 0
+
+_stdin_has_data() {
+    [ -p /dev/stdin ] || [ -f /dev/stdin ]
 }
-report_timer() {
-    ! _is_timer_active && return 0
-    start_ts="$(cat "$trk_timer_file" | cut -d' ' -f1)"
-    timer_elapsed="$(_get_timer_hours)"
-    [ -z "$TRK_UNFRIENDLY" ] && timer_elapsed="$(_get_friendly_time_from_hours "$timer_elapsed")"
-    timer_description="$(cat "$trk_timer_file" | cut -d' ' -f2-)"
-    echo "timer: $timer_elapsed $timer_description"
-}
-report_records() {
-    input_trkfile="$1"
-    ! [ -f "$input_trkfile" ] && _warn "no trk records passed" && exit 0
-    [ -z "$(cat "$input_trkfile")" ] && _warn "no trk records passed" && exit 0
-    tags_pattern='#[0-9a-zA-Z_:\-]\{1,\}\b'
-    _dbg "tags_pattern: $tags_pattern"
-    tags="$(cat "$input_trkfile" | grep -o "$tags_pattern" | sort | uniq)"
-    tmpfile_tags="$(_mktemp)"; trap "rm -f $tmpfile_tags" EXIT
-    total_hours_sum="0"
-    while IFS='\n' read c; do
-        record_tags="$(echo "$c" | grep -o "$tags_pattern" | sort | uniq)"
-        record_date="$(echo "$c" | cut -d' ' -f1)"
-        record_hours="$(echo "$c" | cut -d' ' -f2)"
-        record_desc="$(echo "$c" | cut -d' ' -f3-)"
-        total_hours_sum="${total_hours_sum}+${record_hours}"
-        for t in $record_tags; do echo "$t $record_hours" >>"$tmpfile_tags"; done
-    done <"$input_trkfile"
-    billable_tag_spent_hours=0
-    for t in $tags; do
-        tag_spent_sum_string="$(grep "^$t\b" "$tmpfile_tags" | cut -d' ' -f2 | paste -sd+)"
-        tag_spent="$(awk "BEGIN { print $tag_spent_sum_string }")"
-        [ "$t" = "#billable" ] && billable_tag_spent_hours=$tag_spent
-        [ -z "$TRK_UNFRIENDLY" ] && tag_spent="$(_get_friendly_time_from_hours "$tag_spent")"
-        echo "tag: $t $tag_spent"
+
+_parse_query() {
+    query_source=$trkfile
+    query_source_explicit=0
+    query_mode=auto
+
+    while [ "$#" -gt 0 ]; do
+        case $1 in
+            --stdin)
+                query_source=-
+                query_source_explicit=1
+                shift
+                ;;
+            --grep)
+                [ "$query_mode" = auto ] || _err "use only one of --grep and --date"
+                query_mode=grep
+                shift
+                ;;
+            --date)
+                [ "$query_mode" = auto ] || _err "use only one of --grep and --date"
+                query_mode=date
+                shift
+                ;;
+            --)
+                shift
+                break
+                ;;
+            *) break ;;
+        esac
     done
-    echo
-    total_time_spent="$(awk "BEGIN { print $total_hours_sum }")"
-    chargeability_percentage="$(echo "$billable_tag_spent_hours * 100 / $total_time_spent" | bc)"
-    [ -z "$TRK_UNFRIENDLY" ] && total_time_spent="$(_get_friendly_time_from_hours "$total_time_spent")"
-    echo "tot_spent: $total_time_spent"
-    echo "tot_chargeability: $chargeability_percentage%"
+
+    if [ "$query_source_explicit" -eq 0 ] && _stdin_has_data; then
+        query_source=-
+    fi
+    query_filter=$*
+    if [ "$query_mode" != auto ] && [ -z "$query_filter" ]; then
+        _err "$query_mode filter requires a value"
+    fi
+    _dbg "source: [$query_source], mode: [$query_mode], filter: [$query_filter]"
 }
-report() {
-    report_timer
-    [ -z "$1" ] && [ -t 0 ] && return 0
-    tmpfile_report="$(_mktemp)"; trap "rm -f $tmpfile_report" EXIT
-    [ -z "$1" ] && [ ! -t 0 ] && cat >"$tmpfile_report" && _info "building report from stdin"
-    _dbg "list args input: $*"; set -- "$(_calculate_grep_pattern "$*")"; _dbg "computed input: $*"
-    [ -n "$1" ] && [ -t 0 ] && cat "$trkfile" | grep "$*" >"$tmpfile_report" &&
-        _info "building report"
-        _info "trkfile: $trkfile"
-        _info "filter: [$*]"
-    echo
-    report_records "$tmpfile_report"
+
+_week_pattern() {
+    week_expression=$1
+    week_target=$(date -d "$week_expression" '+%Y-%m-%d') || return 1
+    week_day_number=$(date -d "$week_target" '+%u') || return 1
+    days_before_monday=$((week_day_number - 1))
+    week_monday=$(date -d "$week_target $days_before_monday days ago" '+%Y-%m-%d') || return 1
+
+    week_pattern='^\('
+    week_index=0
+    while [ "$week_index" -lt 7 ]; do
+        week_date=$(date -d "$week_monday + $week_index days" '+%Y-%m-%d') || return 1
+        [ "$week_index" -gt 0 ] && week_pattern="${week_pattern}\\|"
+        week_pattern="${week_pattern}${week_date}"
+        week_index=$((week_index + 1))
+    done
+    printf '%s\\) ' "$week_pattern"
 }
-_check_dependencies() {
-    missing=''; for d in $dependencies; do _dbg "checking dep [$d]"; command -v "$d">/dev/null; [ $? -ne 0 ] && missing="$missing $d"; done
-    [ -n "$missing" ] && echo "missing dependencies: $missing" >&2 && exit 1
-}
-main() {
-    _check_dependencies
-    cmd="$1"; shift
-    case $cmd in
-        t) start_stop_timer "$@";;
-        tt) start_timer_notification "$@";;
-        a) add_record "$@";;
-        l) list_records "$@";;
-        r) report "$@";;
-        e) edit_trkfile;;
-        h) helpmsg && exit 0;;
-        g) cd "$(dirname "$trkfile")" && git "$@";;
-        y) cd "$(dirname "$trkfile")" && git add -A && git commit -m "${*:-sync}"; git pull && git push;;
-        run) "$@";;
-        *) if command -v $scriptname-"$cmd">/dev/null; then $scriptname-"$cmd" "$@"; else usage; exit 0; fi;
+
+_date_filter_pattern() {
+    date_expression=$1
+    _validate_date "$date_expression" || return 1
+
+    if printf '%s\n' "$date_expression" |
+        grep -Eq '^[0-9][0-9][0-9][0-9]$'; then
+        printf '^%s-' "$date_expression"
+        return 0
+    fi
+    if printf '%s\n' "$date_expression" |
+        grep -Eq '^[0-9][0-9][0-9][0-9]-[0-9][0-9]$'; then
+        printf '^%s-' "$date_expression"
+        return 0
+    fi
+
+    case $date_expression in
+        *year*) printf '^%s-' "$(date -d "$date_expression" '+%Y')" ;;
+        *month*) printf '^%s-' "$(date -d "$date_expression" '+%Y-%m')" ;;
+        *week*) _week_pattern "$date_expression" ;;
+        *) printf '^%s ' "$(date -d "$date_expression" '+%Y-%m-%d')" ;;
     esac
 }
-scriptname=$(basename $0)
-[ "$1" ] || { usage; exit 0; } && main "$@"
+
+_calculate_filter_pattern() {
+    filter_value=$1
+    filter_mode=$2
+    case $filter_mode in
+        grep) printf '%s' "$filter_value" ;;
+        date)
+            _date_filter_pattern "$filter_value" ||
+                _err "date expression [$filter_value] is not valid"
+            ;;
+        auto)
+            if _validate_date "$filter_value"; then
+                _date_filter_pattern "$filter_value"
+            else
+                printf '%s' "$filter_value"
+            fi
+            ;;
+    esac
+}
+
+_assert_query_source() {
+    [ "$query_source" = - ] && return 0
+    [ -r "$query_source" ] || _err "cannot read trk file: [$query_source]"
+}
+
+_read_query_source() {
+    if [ "$query_source" = - ]; then
+        cat
+    else
+        cat "$query_source"
+    fi
+}
+
+_validate_grep_pattern() {
+    printf '' | grep -e "$1" >/dev/null 2>&1
+    grep_status=$?
+    [ "$grep_status" -le 1 ] || _err "invalid grep pattern: [$1]"
+}
+
+_prepare_query() {
+    _assert_query_source
+    query_pattern=
+    if [ -n "$query_filter" ]; then
+        query_pattern=$(_calculate_filter_pattern "$query_filter" "$query_mode") || return 1
+        _validate_grep_pattern "$query_pattern"
+        _dbg "computed filter: [$query_pattern]"
+    fi
+}
+
+_emit_prepared_query() {
+    if [ -n "$query_filter" ]; then
+        _read_query_source |
+            grep -v -e '^#' -e '^[[:space:]]*$' |
+            grep -e "$query_pattern"
+    else
+        _read_query_source | grep -v -e '^#' -e '^[[:space:]]*$'
+    fi
+}
+
+list_records() {
+    _parse_query "$@"
+    _prepare_query || return 1
+    _emit_prepared_query
+}
+
+_report_records() {
+    awk -v workday="$trk_workday_hours" \
+        -v numeric="${TRK_UNFRIENDLY:-}" \
+        -v program="$scriptname" '
+        function valid_date(value) {
+            return value ~ /^[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]$/
+        }
+        function valid_hours(value) {
+            return value ~ /^[+-]?[0-9]+([.][0-9]+)?$/
+        }
+        function valid_tag(value) {
+            return value ~ /^#[[:alnum:]_][[:alnum:]_-]*(:[[:alnum:]_][[:alnum:]_-]*)?$/
+        }
+        function human(hours,    negative, seconds, workday_seconds, days, remainder,
+                       hours_part, minutes, seconds_part, result) {
+            negative = hours < 0
+            if (negative) hours = -hours
+            seconds = int(hours * 3600 + 0.5)
+            workday_seconds = int(workday * 3600 + 0.5)
+            days = int(seconds / workday_seconds)
+            remainder = seconds % workday_seconds
+            hours_part = int(remainder / 3600)
+            remainder %= 3600
+            minutes = int(remainder / 60)
+            seconds_part = remainder % 60
+            result = ""
+            if (days) result = result days "d"
+            if (hours_part) result = result hours_part "h"
+            if (minutes) result = result minutes "m"
+            if (seconds_part || result == "") result = result seconds_part "s"
+            return (negative ? "-" : "") result
+        }
+        function format_hours(value) {
+            return numeric != "" ? sprintf("%.2f", value) : human(value)
+        }
+        {
+            if (NF < 3 || !valid_date($1) || !valid_hours($2)) {
+                printf "%s: warn: invalid record at input line %d: %s\n", program, NR, $0 > "/dev/stderr"
+                invalid++
+                next
+            }
+            value = $2 + 0
+            total += value
+            valid++
+            for (seen_tag in seen) delete seen[seen_tag]
+            for (field = 3; field <= NF; field++) {
+                if (valid_tag($field) && !($field in seen)) {
+                    totals[$field] += value
+                    seen[$field] = 1
+                }
+            }
+        }
+        END {
+            if (!valid) {
+                printf "%s: warn: no valid trk records passed\n", program > "/dev/stderr"
+                exit 0
+            }
+            sort_command = "LC_ALL=C sort"
+            tag_count = 0
+            for (tag in totals) {
+                print "tag: " tag " " format_hours(totals[tag]) | sort_command
+                tag_count++
+            }
+            if (tag_count) close(sort_command)
+            print ""
+            print "tot_spent: " format_hours(total)
+            billable = totals["#billable"] + 0
+            percentage = total == 0 ? 0 : billable * 100 / total
+            printf "tot_chargeability: %.2f%%\n", percentage
+            if (invalid)
+                printf "%s: warn: %d invalid record(s) ignored\n", program, invalid > "/dev/stderr"
+        }
+    '
+}
+
+report_records() {
+    _parse_query "$@"
+    _prepare_query || return 1
+    _emit_prepared_query | _report_records
+}
+
+_check_stream() {
+    check_line_number=0
+    check_valid=0
+    check_invalid=0
+
+    while IFS= read -r check_line || [ -n "$check_line" ]; do
+        check_line_number=$((check_line_number + 1))
+        case $check_line in
+            ''|\#*) continue ;;
+        esac
+
+        check_day=${check_line%% *}
+        check_rest=${check_line#* }
+        if [ "$check_rest" = "$check_line" ]; then
+            _warn "line $check_line_number: missing hours and description"
+            check_invalid=$((check_invalid + 1))
+            continue
+        fi
+        check_hours=${check_rest%% *}
+        check_description=${check_rest#* }
+        if [ "$check_description" = "$check_rest" ] || [ -z "$check_description" ]; then
+            _warn "line $check_line_number: missing description"
+            check_invalid=$((check_invalid + 1))
+            continue
+        fi
+        case $check_description in
+            ' '*)
+                _warn "line $check_line_number: fields are not separated by exactly one space"
+                check_invalid=$((check_invalid + 1))
+                continue
+                ;;
+        esac
+        if ! _validate_record_date "$check_day"; then
+            _warn "line $check_line_number: invalid date [$check_day]"
+            check_invalid=$((check_invalid + 1))
+            continue
+        fi
+        if ! _validate_hours "$check_hours"; then
+            _warn "line $check_line_number: invalid hours [$check_hours]"
+            check_invalid=$((check_invalid + 1))
+            continue
+        fi
+        if ! _validate_description "$check_description"; then
+            _warn "line $check_line_number: invalid description or tag"
+            check_invalid=$((check_invalid + 1))
+            continue
+        fi
+        check_valid=$((check_valid + 1))
+    done
+
+    _info "$check_valid valid record(s), $check_invalid invalid record(s)"
+    [ "$check_invalid" -eq 0 ]
+}
+
+check_records() {
+    _parse_query "$@"
+    [ -z "$query_filter" ] || _err "check accepts only --stdin"
+    _assert_query_source
+    if [ "$query_source" = - ]; then
+        _check_stream
+    else
+        _check_stream <"$query_source"
+    fi
+}
+
+edit_trkfile() {
+    _ensure_trk_directory
+    "$editor" "$trkfile"
+}
+
+git_command() {
+    _require git
+    git_directory=$(dirname "$trkfile")
+    (
+        cd "$git_directory" || exit 1
+        git "$@"
+    )
+}
+
+sync_trkfile() {
+    _require git
+    git_directory=$(dirname "$trkfile")
+    git_filename=$(basename "$trkfile")
+    commit_message=${*:-sync}
+    (
+        cd "$git_directory" || exit 1
+        git add -- "$git_filename" || exit 1
+        if ! git diff --cached --quiet -- "$git_filename"; then
+            git commit -m "$commit_message" -- "$git_filename" || exit 1
+        fi
+        git pull --rebase || exit 1
+        git push
+    )
+}
+
+main() {
+    [ "$#" -gt 0 ] || {
+        usage
+        exit 0
+    }
+    cmd=$1
+    shift
+
+    case $cmd in
+        t)
+            _validate_config
+            start_stop_timer "$@"
+            ;;
+        start)
+            _is_timer_active && _err "a timer is already active; use switch"
+            _start_timer "$@"
+            ;;
+        stop)
+            _validate_config
+            _stop_timer
+            ;;
+        switch)
+            [ "$#" -gt 0 ] || _err "add a description to the new timer"
+            _validate_config
+            start_stop_timer "$@"
+            ;;
+        status|s)
+            _validate_config
+            timer_status
+            ;;
+        tt)
+            _validate_config
+            start_timer_notification "$@"
+            ;;
+        a|add) add_record "$@" ;;
+        l|list) list_records "$@" ;;
+        r|report)
+            _validate_config
+            report_records "$@"
+            ;;
+        check) check_records "$@" ;;
+        e|edit) edit_trkfile ;;
+        g|git) git_command "$@" ;;
+        y|sync) sync_trkfile "$@" ;;
+        h|help|-h|--help) helpmsg ;;
+        -v|--version) printf '%s %s\n' "$scriptname" "$version" ;;
+        run)
+            [ "$#" -gt 0 ] || _err "run requires a command"
+            "$@"
+            ;;
+        *)
+            plugin="$scriptname-$cmd"
+            if command -v "$plugin" >/dev/null 2>&1; then
+                "$plugin" "$@"
+            else
+                usage >&2
+                _err "unknown command: [$cmd]"
+            fi
+            ;;
+    esac
+}
+
+main "$@"
