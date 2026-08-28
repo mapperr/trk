@@ -14,67 +14,75 @@ It's a POSIX (-ish), very little, open-source shell script, so you can open it, 
 Usage:
 
 ```
-Usage [v0.5.0]:
-    trk t <description>
-        starts a timer for a new entry
-        eventually terminates the previously active timer
-    trk t
-        terminates the current timer
-    trk tt [notification_interval_in_minutes, default:5]
-        starts a long running process that notifies regurarly if there is an active timer
+Usage [v0.6.0]:
+    trk t [description]
+        without a description, stops the active timer;
+        with a description, stops the active timer if necessary and starts a new one
+    trk start <description>
+    trk stop
+    trk switch <description>
+    trk status
+        explicit timer commands
+    trk tt [notification_interval_in_minutes, default: 5]
+        notifies regularly while a timer is active
 
     trk a <date_arg> <hours> <description>
-        adds a new entry to the trk file.
-        date_arg is any valid value the 'date' command can take, e.g. '-', 'today', 'yesterday', etc.
-        hours spent must be a number and can be decimal: 1, 4.25, 0.5, etc.
+        adds a record; date_arg is accepted by GNU date, e.g. -, today, yesterday
 
-    trk l [grep_pattern | date_arg]
-        prints trk records to stdout, filtering records with grep_pattern or a date_arg if passed.
-        by default it reads the trk file, but it can alternatively take input from stdin
-
-    trk r [grep_pattern | date_arg]
-        shows an aggregate of trk records with per-tag totals,
-        filtering records with grep_pattern or a date_arg if passed.
-        by default it reads the trk file, but it can alternatively take input from stdin
-        it shows a chargeability percentage based on the #billable tag
+    trk l [--stdin] [--grep|--date] [filter]
+        lists records, optionally filtered by a grep pattern or date expression
+    trk r [--stdin] [--grep|--date] [filter]
+        reports total time, chargeability and per-tag totals
+        input defaults to TRK_FILE; a real pipe/redirection is detected automatically
+    trk check [--stdin]
+        validates records and tags
 
     trk e
-        edits the trk file with your $EDITOR
-
-    trk g [git cmds/args]
-        executes git commands in the trk file directory, e.g.: trk g pull
-    trk y [commit msg]
-        executes git add, commit -m 'commit msg' (or 'sync'), pull and push in the tsk directory
+        edits the trk file with VISUAL or EDITOR
+    trk g [git command/arguments]
+        runs git in the trk file directory
+    trk y [commit message]
+        commits only the trk file, pulls with rebase and pushes
     trk h
         shows extended help
 
-trkfile:
-    the trk file contains a list of trk records, one per line.
-    the trk record format is simply: DAY HOURS DESCRIPTION (separated by exactly 1 blank space)
-    where: DAY: YYYY-MM-DD, HOURS: a floating point number, DESCRIPTION: a one-line note with optional tags (see below)
-    so, e.g.: '2025-01-23 4.5 #billable #client:companyA #project:super_webapp work on backend feature X'
+Record format:
+    YYYY-MM-DD HOURS DESCRIPTION
 
-tags:
-    descriptions can contain 'tags' in the form of #tag or #tag:value
-    (tag and value can contain only letters, numbers, undescores '_' and dashes '-', without blank spaces).
-    those tags will result in the reports as additional aggregates or can be used by external integrations.
+    Fields are separated by one space. HOURS is a decimal number. DESCRIPTION
+    is a single line and can contain tags such as:
 
-special-tags:
-	trk report compute your chargeability based on the #billable tag
+    #billable #client:company-a #project:super_webapp #hid:25875920
 
-filtering:
-    the l[ist] and r[eport] commands optionally take a grep pattern or a date arg as input.
-    the grep pattern is obviously grep-compatible a regex.
-    The date arg is a value that is a valid 'date' command 'DATE STRING': something like yesterday, 7 days ago, etc. 
-    trk tries to be smart, e.g.: if the date arg contains 'month' or 'week', then it adjust the resulting filter to grep the entire month/week.
-    
-env vars:
-    - TRK_DEBUG: set it to whatever value to show debug informations [default: unset, cur: ...]
-    - TRK_FILE: the trk file you are working on [default: ~/.trkfile, cur: ...]
-    - TRK_WORKDAY_HOURS: workday hours [default: 8, cur: ...]
-    - TRK_UNFRIENDLY: prints spent time in hours with 2 decimals, useful for sorting, parsing, etc. [default: unset, cur: ...]
-    - TRK_TAGS: trk will prepend the content of this var to the record description,
-        useful if, e.g., you are working on a specific client/project all day [default: unset, cur: ...]
+Tags:
+    A tag is #name or #name:value. Names and values contain letters, numbers,
+    underscores and dashes. Tags are whitespace-separated tokens.
+    #billable is used to calculate chargeability.
+
+Filtering:
+    Without options, a valid GNU date expression is converted to a date filter;
+    any other value is treated as a basic grep regular expression.
+    Expressions containing 'week', 'month' or 'year' select the whole period.
+    --grep forces regular-expression interpretation.
+    --date forces date interpretation.
+    --stdin forces stdin. It is useful in non-interactive environments, although
+    pipes and regular-file redirections are normally detected automatically.
+
+Examples:
+    trk a today 2.5 '#billable #client:acme implementation'
+    trk l 'this week'
+    trk l --grep '#client:acme.*#project:web'
+    trk l 'this month' | trk r
+    trk r --stdin '#billable' < exported-records
+    trk check
+
+Environment:
+    TRK_DEBUG          enable diagnostic messages [current: unset]
+    TRK_FILE           record file [current: ~/src/git.sr.ht/~mapperr/timetracking/trkfile]
+    TRK_WORKDAY_HOURS  hours represented by one friendly-format day [current: 8]
+    TRK_UNFRIENDLY     output report times as decimal hours with two decimals
+    TRK_TAGS           tags prepended once to newly added records or timers
+    VISUAL, EDITOR     editor command [current: $EDITOR]
 ```
 
 
