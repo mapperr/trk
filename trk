@@ -1,6 +1,6 @@
 #!/bin/sh
 
-version="0.6.0"
+version="0.7.0"
 trkfile="${TRK_FILE:-$HOME/.trkfile}"
 trk_workday_hours="${TRK_WORKDAY_HOURS:-8}"
 editor="${VISUAL:-${EDITOR:-vi}}"
@@ -57,12 +57,13 @@ helpmsg() {
     Fields are separated by one space. HOURS is a decimal number. DESCRIPTION
     is a single line and can contain tags such as:
 
-    #billable #client:company-a #project:super_webapp #hid:25875920
+    +billable +client:company-a +project:super_webapp +hid:25875920
 
 Tags:
-    A tag is #name or #name:value. Names and values contain letters, numbers,
+    A tag is +name or +name:value. Names and values contain letters, numbers,
     underscores and dashes. Tags are whitespace-separated tokens.
-    #billable is used to calculate chargeability.
+    +billable is used to calculate chargeability. The old #tag syntax is not
+    accepted; # at the beginning of a line remains the comment marker.
 
 Filtering:
     Without options, a valid GNU date expression is converted to a date filter;
@@ -74,11 +75,11 @@ Filtering:
     pipes and regular-file redirections are normally detected automatically.
 
 Examples:
-    $scriptname a today 2.5 '#billable #client:acme implementation'
+    $scriptname a today 2.5 '+billable +client:acme implementation'
     $scriptname l 'this week'
-    $scriptname l --grep '#client:acme.*#project:web'
+    $scriptname l --grep '+client:acme.*+project:web'
     $scriptname l 'this month' | $scriptname r
-    $scriptname r --stdin '#billable' < exported-records
+    $scriptname r --stdin '+billable' < exported-records
     $scriptname check
 
 Environment:
@@ -140,7 +141,7 @@ _validate_positive_number() {
 
 _validate_tag() {
     printf '%s\n' "$1" |
-        grep -Eq '^#[[:alnum:]_][[:alnum:]_-]*(:[[:alnum:]_][[:alnum:]_-]*)?$'
+        grep -Eq '^\+[[:alnum:]_][[:alnum:]_-]*(:[[:alnum:]_][[:alnum:]_-]*)?$'
 }
 
 _validate_env_tags() {
@@ -154,7 +155,8 @@ _validate_description_tags() {
     description_to_check=$1
     for tag_word in $description_to_check; do
         case $tag_word in
-            \#*) _validate_tag "$tag_word" || return 1 ;;
+            +*) _validate_tag "$tag_word" || return 1 ;;
+            \#*) return 1 ;;
         esac
     done
     return 0
@@ -619,7 +621,7 @@ _report_records() {
             return value ~ /^[+-]?[0-9]+([.][0-9]+)?$/
         }
         function valid_tag(value) {
-            return value ~ /^#[[:alnum:]_][[:alnum:]_-]*(:[[:alnum:]_][[:alnum:]_-]*)?$/
+            return value ~ /^\+[[:alnum:]_][[:alnum:]_-]*(:[[:alnum:]_][[:alnum:]_-]*)?$/
         }
         function human(hours,    negative, seconds, workday_seconds, days, remainder,
                        hours_part, minutes, seconds_part, result) {
@@ -649,6 +651,14 @@ _report_records() {
                 invalid++
                 next
             }
+            for (field = 3; field <= NF; field++) {
+                first = substr($field, 1, 1)
+                if (first == "#" || (first == "+" && !valid_tag($field))) {
+                    printf "%s: warn: invalid tag at input line %d: %s\n", program, NR, $field > "/dev/stderr"
+                    invalid++
+                    next
+                }
+            }
             value = $2 + 0
             total += value
             valid++
@@ -674,7 +684,7 @@ _report_records() {
             if (tag_count) close(sort_command)
             print ""
             print "tot_spent: " format_hours(total)
-            billable = totals["#billable"] + 0
+            billable = totals["+billable"] + 0
             percentage = total == 0 ? 0 : billable * 100 / total
             printf "tot_chargeability: %.2f%%\n", percentage
             if (invalid)

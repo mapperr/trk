@@ -1,0 +1,113 @@
+#!/bin/sh
+
+set -f
+umask 077
+
+scriptname=${0##*/}
+dry_run=0
+trkfile=${TRK_FILE:-"$HOME/.trkfile"}
+tmp=
+
+usage() {
+    printf '%s\n' "Usage:
+    $scriptname [--dry-run] [trkfile]
+    trk migrate-tags [--dry-run] [trkfile]
+
+Convert old #name and #name:value tags to +name and +name:value.
+
+Without trkfile, the script uses TRK_FILE or \$HOME/.trkfile. In normal mode
+it updates the file atomically and saves the original as TRKFILE.bak. If no
+old tags are found, it changes nothing and creates no backup.
+
+Options:
+    -n, --dry-run  write the converted file to stdout without changing it
+    -h, --help     show this help"
+}
+
+die() {
+    printf '%s: error: %s\n' "$scriptname" "$1" >&2
+    exit 1
+}
+
+cleanup() {
+    if [ -n "$tmp" ] && [ -e "$tmp" ]; then
+        rm -f "$tmp"
+    fi
+}
+
+migrate() {
+    # A loop is necessary for adjacent tags: consuming the whitespace after
+    # one match would otherwise prevent the following tag from matching.
+    # Lines beginning with # are trk comments and must remain untouched.
+    sed -E '
+        /^#/b
+        :again
+        s/(^|[[:space:]])#([[:alnum:]_][[:alnum:]_-]*(:[[:alnum:]_][[:alnum:]_-]*)?)([[:space:]]|$)/\1+\2\4/
+        t again
+    ' "$trkfile"
+}
+
+while [ "$#" -gt 0 ]; do
+    case $1 in
+        -n|--dry-run)
+            dry_run=1
+            shift
+            ;;
+        -h|--help)
+            usage
+            exit 0
+            ;;
+        --)
+            shift
+            break
+            ;;
+        -*)
+            die "unknown option: [$1]"
+            ;;
+        *)
+            break
+            ;;
+    esac
+done
+
+[ "$#" -le 1 ] || die 'expected at most one trkfile'
+[ "$#" -eq 0 ] || trkfile=$1
+
+# Prefix relative paths so utility operands beginning with '-' stay filenames.
+case $trkfile in
+    /*) ;;
+    *) trkfile=./$trkfile ;;
+esac
+
+[ -f "$trkfile" ] || die "trkfile is not a regular file: [$trkfile]"
+[ -r "$trkfile" ] || die "cannot read trkfile: [$trkfile]"
+[ ! -L "$trkfile" ] || die "refusing to replace a symbolic link: [$trkfile]"
+
+if [ "$dry_run" -eq 1 ]; then
+    migrate || die 'migration failed'
+    exit 0
+fi
+
+[ -w "$trkfile" ] || die "cannot write trkfile: [$trkfile]"
+backup=$trkfile.bak
+
+tmp=$(mktemp "$trkfile.tmp.XXXXXX") || die 'cannot create temporary file'
+trap cleanup 0
+trap 'exit 1' HUP INT TERM
+
+migrate >"$tmp" || die 'migration failed'
+
+if cmp -s "$trkfile" "$tmp"; then
+    printf '%s: no old tags found in %s\n' "$scriptname" "$trkfile"
+    exit 0
+fi
+
+[ ! -e "$backup" ] || die "backup already exists: [$backup]"
+chmod --reference="$trkfile" "$tmp" || die 'cannot preserve file permissions'
+cp -p "$trkfile" "$backup" || die "cannot create backup: [$backup]"
+mv "$tmp" "$trkfile" || die "cannot replace trkfile: [$trkfile]"
+tmp=
+
+trap - 0 HUP INT TERM
+printf '%s: migrated %s\n' "$scriptname" "$trkfile"
+printf '%s: backup saved as %s\n' "$scriptname" "$backup"
