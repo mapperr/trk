@@ -1,41 +1,32 @@
 #!/bin/sh
 
-version="0.1.0"
-required_trk_version="0.6.0"
+version="0.2.0"
+required_trk_version="0.7.0"
 dependencies="curl jq trk"
 
 keito_origin="${TRK_KEITO_ORIGIN:-https://app.keito.ai}"
+keito_origin=${keito_origin%/}
 keito_api="$keito_origin/api/v2"
-trk_task_tag="#kid"
-trk_project_tag="#kpid"
-
-# Keito records a source on every entry. Entries this plugin creates are
-# written with keito_source; only entries whose source is in
-# keito_managed_sources are ever deleted, so work logged in the web app, the
-# desktop app or by an agent is never removed by a sync.
 keito_source="${TRK_KEITO_SOURCE:-api}"
-keito_managed_sources="${TRK_KEITO_MANAGED_SOURCES:-$keito_source}"
-
-# Keito does not document the precision it keeps for hours. trk writes up to
-# four decimals, so both sides are rounded to this many before comparing and
-# before posting: what we send comes back identical and the sync converges.
-keito_hours_decimals="${TRK_KEITO_HOURS_DECIMALS:-2}"
 keito_max_attempts="${TRK_KEITO_MAX_ATTEMPTS:-4}"
+keito_connect_timeout="${TRK_KEITO_CONNECT_TIMEOUT:-10}"
+keito_max_time="${TRK_KEITO_MAX_TIME:-120}"
+keito_hours_decimals="${TRK_KEITO_HOURS_DECIMALS:-2}"
+
+trk_task_tag="+kid"
+trk_project_tag="+kpid"
+trk_billable_tag="+billable"
+integration_name="trk-keito"
 
 trkfile="${TRK_FILE:-$HOME/.trkfile}"
 cache_dir="${TRK_KEITO_CACHE_DIR:-${XDG_CACHE_HOME:-$HOME/.cache}/trk-keito}"
-assignments_cache="$cache_dir/task-assignments.txt"
-identity_cache="$cache_dir/identity.txt"
 logfile="${TRK_KEITO_LOG:-$cache_dir/trk-keito.log}"
 
-# one-character separator for the task assignment cache
-assignment_separator='~'
-
 scriptname=${0##*/}
-tab=$(printf '\t')
+separator=$(printf '\037')
 
-# Descriptions, notes and grep patterns must never undergo pathname expansion.
-# Cache and log files hold client names and API payloads: keep them private.
+# Record descriptions, notes and filters must not undergo pathname expansion.
+# Credentials, caches, logs and temporary files are private by default.
 set -f
 umask 077
 LC_NUMERIC=C
@@ -43,146 +34,132 @@ export LC_NUMERIC
 
 work_directory=
 assume_yes=0
+filter=
+filter_mode=auto
+filter_pattern=
+filter_selects_period=1
+range_from=
+range_to=
 keito_user_id=
 
 usage() {
     printf '%s\n' "Usage [v$version]:
     $scriptname l [--grep|--date] [filter]
-        lists keito time entries for the period covered by the filter
+        lists keito time entries; grep filters are applied to displayed rows
 
-    $scriptname t [pattern]
-    $scriptname tt [pattern]
-        lists the keito project/task assignments of your user, filtered by
-        pattern; the list is cached, 'tt' forces a refresh
+    $scriptname j [pattern]       lists cached projects
+    $scriptname jj [pattern]      refreshes and lists projects
+    $scriptname t [pattern]       lists cached tasks
+    $scriptname tt [pattern]      refreshes and lists tasks
+    $scriptname refresh           refreshes both inventories
 
-    $scriptname a [-p project_id] <date_arg> <hours> <task_id> [project_id] <notes>
-        adds a single time entry to keito
+    $scriptname a [-b] [-p project_id] <date> <hours> <task_id> [project_id] [notes]
+        adds one managed time entry; project_id is required, by -p or position
     $scriptname d <entry_id>
-        deletes a single time entry from keito
+        deletes one time entry by id
 
     $scriptname p [--grep|--date] [filter]
-        shows the changes needed to align keito with the trk records
+        shows the plan needed to mirror selected trk records to keito
     $scriptname s [-y] [--grep|--date] [filter]
-        applies those changes: one-way sync from trk to keito
+        applies the plan; deletions require confirmation or -y
 
+    $scriptname doctor
+        validates trk, authentication and project/task discovery
     $scriptname h
         shows extended help
 
     Every command is also reachable as: trk keito <command>"
 }
 
+_api_key_state() {
+    if [ -n "${TRK_KEITO_API_KEY:-${KEITO_API_KEY:-}}" ]; then
+        printf '%s' set
+    else
+        printf '%s' unset
+    fi
+}
+
 helpmsg() {
     usage
     printf '\n%s\n' "Record mapping:
-    Only trk records carrying a $trk_task_tag tag are synchronised. The task id comes from
-    $trk_task_tag:<id>, the project id from $trk_project_tag:<id>. Every other tag is stripped: what
-    reaches the keito 'notes' field is the description without tags, with
-    whitespace squeezed to single spaces.
+    A mirrored trk record must contain both:
 
-    2026-08-31 1.5 #billable $trk_task_tag:cm7t4k9 $trk_project_tag:cm3p8w2 fix the importer
-        -> spent_date 2026-08-31, hours 1.50, task cm7t4k9, project cm3p8w2
+        $trk_task_tag:<task_id> $trk_project_tag:<project_id>
 
-    Keito ids are opaque strings such as 'cm7t4k9x0000abcd', not numbers. They
-    must still be valid trk tag values: letters, digits, underscores, dashes.
+    Keito tasks are workspace-global, so a task never implies a project. A
+    record carrying only one of the two tags is an error and aborts plan/sync.
+    Every other +tag is stripped from the Keito notes.
 
-Why the project tag matters:
-    In Keito a task is a workspace-level object reused across many projects, so
-    a task id alone does not identify a project. $trk_project_tag is therefore required,
-    except when the cached assignments map the task to exactly one project. If
-    a task belongs to several projects and $trk_project_tag is missing, the record is
-    skipped with a warning rather than guessed at. This is the one real
-    difference from the harvest plugin, where the task id was enough.
+    2026-08-31 1.5 $trk_billable_tag $trk_task_tag:task_123 $trk_project_tag:project_456 fix importer
+        -> 2026-08-31, 1.50h, task_123, project_456, billable, 'fix importer'
 
-Hours:
-    Rounded to $keito_hours_decimals decimals on both sides. Override with TRK_KEITO_HOURS_DECIMALS.
+Inventories:
+    '$scriptname j' and '$scriptname t' print ready-to-copy tags. Their caches
+    are scoped by Keito company id. Use jj/tt or refresh after Keito changes.
 
-Billable:
-    A #billable tag is pushed as billable:true when the entry is created, but
-    it is not part of the comparison. Keito can override the flag from the
-    project billing settings, and reconciling a value the server may rewrite
-    would make the sync oscillate.
+Mirroring and ownership:
+    trk is the source of truth. The comparison uses date, rounded hours, task,
+    project and normalised notes as a multiset, so duplicate records are kept.
+    Changes are implemented as add-new then delete-old.
 
-Sources:
-    Entries created here are written with source '$keito_source'.
-    Only entries whose source is one of [$keito_managed_sources] can be deleted.
-    Anything logged in the web app, the desktop app, the CLI or by an agent is
-    reported but left untouched. Widen with TRK_KEITO_MANAGED_SOURCES.
+    New entries carry metadata.integration='$integration_name'. Only entries
+    with that metadata marker are ever deleted by sync. source='$keito_source'
+    is descriptive and is not used as proof of ownership. Running timers and
+    entries created by the web app, CLI, desktop or other APIs are left alone.
+
+    All additions run before deletions. If any addition fails, no deletion is
+    attempted. POST is never retried automatically; rerun sync to converge.
 
 Filtering:
-    Without options a valid GNU date expression becomes a date filter and any
-    other value is treated as a basic grep pattern, exactly as in trk.
-    --date and --grep force the interpretation. The filter is resolved by trk
-    itself, so 'this week', 'last month' and friends behave here the way they
-    behave in 'trk l'.
+    Filtering follows trk. A date expression selects a period and allows both
+    additions and deletions. A grep selects trk records, so only additions are
+    computed: deleting by grep would be ambiguous on the Keito side.
 
-    A date filter (or no filter at all) selects a period: additions and
-    deletions are both computed over that period.
-    A grep filter selects records, not a period: deletions are skipped, since
-    a keito entry carries no trk tags and could not be told apart from an
-    entry belonging to another project.
+    No filter means the complete trk/Keito history for the current user.
+    Running sync without a terminal refuses deletions unless -y or
+    TRK_KEITO_ASSUME_YES is set.
 
-Sync safety:
-    's' asks for confirmation before deleting, when run on a terminal.
-    Use -y, or TRK_KEITO_ASSUME_YES, to skip the question in scripts.
-    Running keito timers are never touched.
-    429 and 5xx responses are retried with exponential backoff.
+Hours and billable:
+    Hours are rounded to $keito_hours_decimals decimals on both sides. A
+    $trk_billable_tag tag is sent as billable:true but is deliberately excluded
+    from the comparison because Keito may derive the effective value from the
+    project billing configuration.
 
 Requirements:
     trk >= $required_trk_version, plus: $dependencies
 
 Environment:
-    TRK_KEITO_API_KEY         keito api key, falls back to KEITO_API_KEY [${TRK_KEITO_API_KEY:-${KEITO_API_KEY:+set}}${TRK_KEITO_API_KEY:+set}]
-    TRK_KEITO_ACCOUNT_ID      keito company id, falls back to KEITO_ACCOUNT_ID
+    TRK_KEITO_API_KEY         Keito API key, falling back to KEITO_API_KEY
+                              [current: $(_api_key_state)]
+    TRK_KEITO_ACCOUNT_ID      company id, falling back to KEITO_ACCOUNT_ID
                               [current: ${TRK_KEITO_ACCOUNT_ID:-${KEITO_ACCOUNT_ID:-unset}}]
-    TRK_KEITO_USER_ID         skip the /users/me lookup [current: ${TRK_KEITO_USER_ID:-unset}]
-    TRK_KEITO_SOURCE          source written on new entries [current: $keito_source]
-    TRK_KEITO_MANAGED_SOURCES comma separated, deletable sources [current: $keito_managed_sources]
-    TRK_KEITO_HOURS_DECIMALS  comparison precision [current: $keito_hours_decimals]
-    TRK_KEITO_MAX_ATTEMPTS    attempts per request [current: $keito_max_attempts]
-    TRK_KEITO_ASSUME_YES      never ask for confirmation
-    TRK_KEITO_ORIGIN          api origin, for staging [current: $keito_origin]
-    TRK_KEITO_CACHE_DIR       cache location [current: $cache_dir]
-    TRK_KEITO_LOG             api log file [current: $logfile]
-    TRK_DEBUG                 enable diagnostic messages [current: ${TRK_DEBUG:-unset}]
-    TRK_FILE                  record file, read by trk [current: $trkfile]
+    TRK_KEITO_USER_ID         skip /users/me [current: ${TRK_KEITO_USER_ID:-unset}]
+    TRK_KEITO_SOURCE          source for new entries [current: $keito_source]
+    TRK_KEITO_HOURS_DECIMALS  comparison precision, 0..6 [current: $keito_hours_decimals]
+    TRK_KEITO_MAX_ATTEMPTS    attempts for safe requests [current: $keito_max_attempts]
+    TRK_KEITO_CONNECT_TIMEOUT curl connect timeout [current: $keito_connect_timeout]
+    TRK_KEITO_MAX_TIME        curl request timeout [current: $keito_max_time]
+    TRK_KEITO_ASSUME_YES      permit non-interactive deletions
+    TRK_KEITO_ORIGIN          API origin [current: $keito_origin]
+    TRK_KEITO_CACHE_DIR       cache directory [current: $cache_dir]
+    TRK_KEITO_LOG             API log [current: $logfile]
+    TRK_DEBUG                 diagnostics [current: ${TRK_DEBUG:-unset}]
+    TRK_FILE                  record file read by trk [current: $trkfile]
     TRK_WORKDAY_HOURS, TRK_UNFRIENDLY
-                              read by trk, honoured here as well"
+                              honoured when formatting totals"
 }
 
-_err() {
-    printf '%s: error: %s\n' "$scriptname" "$1" >&2
-    exit 1
-}
-
-_warn() {
-    printf '%s: warn: %s\n' "$scriptname" "$1" >&2
-}
-
-_info() {
-    printf '%s: %s\n' "$scriptname" "$1" >&2
-}
-
+_err() { printf '%s: error: %s\n' "$scriptname" "$1" >&2; exit 1; }
+_warn() { printf '%s: warn: %s\n' "$scriptname" "$1" >&2; }
+_info() { printf '%s: %s\n' "$scriptname" "$1" >&2; }
 _dbg() {
-    [ -n "${TRK_DEBUG:-}" ] &&
-        printf '%s: debug: %s\n' "$scriptname" "$1" >&2
+    [ -n "${TRK_DEBUG:-}" ] && printf '%s: debug: %s\n' "$scriptname" "$1" >&2
     return 0
 }
+_require() { command -v "$1" >/dev/null 2>&1 || _err "missing '$1' command"; }
+_check_dependencies() { for dependency in $dependencies; do _require "$dependency"; done; }
 
-_require() {
-    command -v "$1" >/dev/null 2>&1 || _err "missing '$1' command"
-}
-
-_check_dependencies() {
-    for dependency in $dependencies; do
-        _require "$dependency"
-    done
-}
-
-_cleanup() {
-    [ -n "$work_directory" ] && rm -rf "$work_directory"
-    return 0
-}
-
+_cleanup() { [ -n "$work_directory" ] && rm -rf "$work_directory"; return 0; }
 _setup_work_directory() {
     work_directory=$(mktemp -d "${TMPDIR:-/tmp}/trk-keito.XXXXXX") ||
         _err "cannot create a temporary directory"
@@ -190,75 +167,66 @@ _setup_work_directory() {
     trap '_cleanup; exit 130' HUP INT TERM
 }
 
-_setup_cache_directory() {
-    [ -d "$cache_dir" ] || mkdir -p "$cache_dir" ||
-        _err "cannot create the cache directory: [$cache_dir]"
-}
-
 _confirm() {
     [ "$assume_yes" -eq 1 ] && return 0
     [ -n "${TRK_KEITO_ASSUME_YES:-}" ] && return 0
-    [ -t 0 ] || return 0
+    [ -t 0 ] || return 1
     printf '%s: %s [y/N] ' "$scriptname" "$1" >&2
     read -r confirm_answer </dev/tty || return 1
-    case $confirm_answer in
-        y|Y|yes|YES) return 0 ;;
-    esac
+    case $confirm_answer in y|Y|yes|YES) return 0 ;; esac
     return 1
 }
 
 # --- trk bridge ------------------------------------------------------------
-# trk auto-detects stdin: every call must get its own /dev/null or it would
-# read the pipe it was started from instead of the trk file.
 
-_trk() {
-    trk "$@" </dev/null
-}
-
-_trk_run() {
-    trk run "$@" </dev/null
-}
+_trk() { trk "$@" </dev/null; }
+_trk_run() { trk run "$@" </dev/null; }
 
 _check_trk_version() {
     trk_version=$(_trk --version 2>/dev/null | awk 'NF { print $NF }')
-    [ -n "$trk_version" ] ||
-        _err "cannot read the trk version; trk >= $required_trk_version is required"
+    [ -n "$trk_version" ] || _err "cannot read trk version; trk >= $required_trk_version is required"
     awk -v found="$trk_version" -v wanted="$required_trk_version" '
         BEGIN {
-            found_count = split(found, found_parts, ".")
-            wanted_count = split(wanted, wanted_parts, ".")
-            total = found_count > wanted_count ? found_count : wanted_count
-            for (i = 1; i <= total; i++) {
-                a = found_parts[i] + 0
-                b = wanted_parts[i] + 0
-                if (a > b) exit 0
-                if (a < b) exit 1
+            nf = split(found, f, "."); nw = split(wanted, w, "."); n = nf > nw ? nf : nw
+            for (i = 1; i <= n; i++) {
+                if (f[i] + 0 > w[i] + 0) exit 0
+                if (f[i] + 0 < w[i] + 0) exit 1
             }
-            exit 0
-        }' ||
-        _err "trk $trk_version is too old; this plugin needs trk >= $required_trk_version"
-    _dbg "trk version: [$trk_version]"
+        }' || _err "trk $trk_version is too old; need trk >= $required_trk_version"
 }
 
 _format_hours() {
     if [ -n "${TRK_UNFRIENDLY:-}" ]; then
-        awk -v hours="$1" 'BEGIN { printf "%.2f\n", hours }'
-        return 0
+        awk -v hours="$1" 'BEGIN { printf "%.2f\n", hours }'; return 0
     fi
     format_seconds=$(awk -v hours="$1" 'BEGIN { printf "%.0f\n", hours * 3600 }')
     _trk_run _friendly_seconds "$format_seconds" 2>/dev/null ||
         awk -v hours="$1" 'BEGIN { printf "%.2f\n", hours }'
 }
-
 _normalize_hours() {
-    awk -v hours="$1" -v decimals="$keito_hours_decimals" \
-        'BEGIN { printf "%.*f\n", decimals, hours + 0 }'
+    awk -v hours="$1" -v decimals="$keito_hours_decimals" 'BEGIN { printf "%.*f\n", decimals, hours + 0 }'
+}
+_is_id() { printf '%s\n' "$1" | grep -Eq '^[A-Za-z0-9_][A-Za-z0-9_-]*$'; }
+_is_positive_integer() {
+    case $1 in ''|*[!0-9]*) return 1 ;; esac
+    [ "$1" -gt 0 ]
 }
 
-# Keito ids are opaque strings, but they still have to survive trk's tag
-# grammar, which allows letters, digits, underscores and dashes only.
-_is_id() {
-    printf '%s\n' "$1" | grep -Eq '^[A-Za-z0-9_][A-Za-z0-9_-]*$'
+_validate_config() {
+    case $keito_hours_decimals in 0|1|2|3|4|5|6) ;; *) _err "TRK_KEITO_HOURS_DECIMALS must be 0..6" ;; esac
+    _is_positive_integer "$keito_max_attempts" || _err "TRK_KEITO_MAX_ATTEMPTS must be positive"
+    _is_positive_integer "$keito_connect_timeout" || _err "TRK_KEITO_CONNECT_TIMEOUT must be positive"
+    _is_positive_integer "$keito_max_time" || _err "TRK_KEITO_MAX_TIME must be positive"
+    case $keito_source in web|cli|api|agent|calendar|desktop) ;; *) _err "invalid source: [$keito_source]" ;; esac
+}
+
+_check_trkfile() {
+    [ -r "$trkfile" ] || _err "cannot read trk file: [$trkfile]"
+    check_log="$work_directory/trk-check.log"
+    if ! _trk check >/dev/null 2>"$check_log"; then
+        cat "$check_log" >&2
+        _err "trk file validation failed; sync aborted"
+    fi
 }
 
 # --- filters ---------------------------------------------------------------
@@ -267,818 +235,531 @@ _parse_filter() {
     filter_mode=auto
     while [ "$#" -gt 0 ]; do
         case $1 in
-            -y|--yes)
-                assume_yes=1
-                shift
-                ;;
+            -y|--yes) assume_yes=1; shift ;;
             --grep)
                 [ "$filter_mode" = auto ] || _err "use only one of --grep and --date"
-                filter_mode="grep"
-                shift
-                ;;
+                filter_mode=grep; shift ;;
             --date)
                 [ "$filter_mode" = auto ] || _err "use only one of --grep and --date"
-                filter_mode="date"
-                shift
-                ;;
-            --)
-                shift
-                break
-                ;;
+                filter_mode=date; shift ;;
+            --) shift; break ;;
             *) break ;;
         esac
     done
     filter=$*
-    if [ "$filter_mode" != auto ] && [ -z "$filter" ]; then
-        _err "$filter_mode filter requires a value"
-    fi
-
-    filter_pattern=
-    filter_selects_period=1
+    [ "$filter_mode" = auto ] || [ -n "$filter" ] || _err "$filter_mode filter requires a value"
+    filter_pattern=; filter_selects_period=1
     if [ -n "$filter" ]; then
         filter_pattern=$(_trk_run _calculate_filter_pattern "$filter" "$filter_mode") ||
-            _err "cannot compute a filter for [$filter]"
+            _err "cannot compute filter for [$filter]"
         case $filter_mode in
             date) filter_selects_period=1 ;;
             grep) filter_selects_period=0 ;;
             auto)
-                if _trk_run _validate_date "$filter"; then
-                    filter_selects_period=1
-                else
-                    filter_selects_period=0
-                fi
-                ;;
+                if _trk_run _validate_date "$filter"; then filter_selects_period=1; else filter_selects_period=0; fi ;;
         esac
     fi
-    _dbg "filter: [$filter], mode: [$filter_mode], pattern: [$filter_pattern], period: [$filter_selects_period]"
+    _dbg "filter=[$filter] mode=[$filter_mode] pattern=[$filter_pattern] period=$filter_selects_period"
 }
 
-# Turns a trk filter pattern into the from/to pair accepted by the keito api.
-# Only the shapes trk itself emits are recognised; anything else means "no
-# range", so the whole history is fetched and matching decides.
 _date_range_from_pattern() {
-    range_pattern=$1
-    [ -n "$range_pattern" ] || return 1
-
+    range_pattern=$1; [ -n "$range_pattern" ] || return 1
     if printf '%s\n' "$range_pattern" | grep -Eq '^\^[0-9]{4}-$'; then
         range_year=$(printf '%s' "$range_pattern" | tr -dc '0-9')
-        printf '%s-01-01 %s-12-31\n' "$range_year" "$range_year"
-        return 0
+        printf '%s-01-01 %s-12-31\n' "$range_year" "$range_year"; return 0
     fi
     if printf '%s\n' "$range_pattern" | grep -Eq '^\^[0-9]{4}-[0-9]{2}-$'; then
         range_month=$(printf '%s' "$range_pattern" | sed 's/^\^//; s/-$//')
         range_start="$range_month-01"
         range_end=$(date -d "$range_start + 1 month - 1 day" '+%Y-%m-%d') || return 1
-        printf '%s %s\n' "$range_start" "$range_end"
-        return 0
+        printf '%s %s\n' "$range_start" "$range_end"; return 0
     fi
     if printf '%s\n' "$range_pattern" | grep -Eq '^\^[0-9]{4}-[0-9]{2}-[0-9]{2} $'; then
         range_day=$(printf '%s' "$range_pattern" | sed 's/^\^//; s/ $//')
-        printf '%s %s\n' "$range_day" "$range_day"
-        return 0
+        printf '%s %s\n' "$range_day" "$range_day"; return 0
     fi
     if printf '%s\n' "$range_pattern" |
         grep -Eq '^\^\\\([0-9]{4}-[0-9]{2}-[0-9]{2}(\\\|[0-9]{4}-[0-9]{2}-[0-9]{2})*\\\) $'; then
-        range_days=$(printf '%s' "$range_pattern" |
-            grep -Eo '[0-9]{4}-[0-9]{2}-[0-9]{2}' | LC_ALL=C sort)
-        printf '%s %s\n' \
-            "$(printf '%s\n' "$range_days" | head -n 1)" \
-            "$(printf '%s\n' "$range_days" | tail -n 1)"
-        return 0
+        range_days=$(printf '%s' "$range_pattern" | grep -Eo '[0-9]{4}-[0-9]{2}-[0-9]{2}' | LC_ALL=C sort)
+        printf '%s %s\n' "$(printf '%s\n' "$range_days" | head -n 1)" \
+            "$(printf '%s\n' "$range_days" | tail -n 1)"; return 0
     fi
     return 1
 }
 
 _resolve_date_range() {
-    range_from=
-    range_to=
+    range_from=; range_to=
+    [ "$filter_selects_period" -eq 1 ] || return 0
     [ -n "$filter_pattern" ] || return 0
-    resolved_range=$(_date_range_from_pattern "$filter_pattern") || {
-        _dbg "no date range derived from the filter"
-        return 0
-    }
-    range_from=${resolved_range%% *}
-    range_to=${resolved_range##* }
-    _dbg "keito date range: [$range_from] .. [$range_to]"
+    resolved_range=$(_date_range_from_pattern "$filter_pattern") ||
+        _err "cannot derive a safe Keito date range from [$filter]"
+    range_from=${resolved_range%% *}; range_to=${resolved_range##* }
 }
 
-# --- keito api -------------------------------------------------------------
+# --- Keito API -------------------------------------------------------------
 
-_keito_require_env() {
+_keito_setup() {
     keito_api_key="${TRK_KEITO_API_KEY:-${KEITO_API_KEY:-}}"
     keito_account_id="${TRK_KEITO_ACCOUNT_ID:-${KEITO_ACCOUNT_ID:-}}"
-    [ -n "$keito_api_key" ] ||
-        _err "no api key: set TRK_KEITO_API_KEY or KEITO_API_KEY"
-    [ -n "$keito_account_id" ] ||
-        _err "no company id: set TRK_KEITO_ACCOUNT_ID or KEITO_ACCOUNT_ID"
+    [ -n "$keito_api_key" ] || _err "set TRK_KEITO_API_KEY or KEITO_API_KEY"
+    [ -n "$keito_account_id" ] || _err "set TRK_KEITO_ACCOUNT_ID or KEITO_ACCOUNT_ID"
+    _is_id "$keito_account_id" || _err "invalid company id: [$keito_account_id]"
+    case $keito_api_key in *'"'*|*'
+'*) _err "API key contains invalid characters" ;; esac
 
-    # Credentials go into a curl config file instead of the command line, so
-    # that the api key never shows up in the process list.
+    account_cache_dir="$cache_dir/accounts/$keito_account_id"
+    projects_cache="$account_cache_dir/projects.jsonl"
+    tasks_cache="$account_cache_dir/tasks.jsonl"
+    mkdir -p "$account_cache_dir" || _err "cannot create cache: [$account_cache_dir]"
+    log_directory=$(dirname "$logfile")
+    mkdir -p "$log_directory" || _err "cannot create log directory: [$log_directory]"
+
     keito_curl_config="$work_directory/curl.conf"
     {
-        printf 'silent\n'
-        printf 'show-error\n'
+        printf 'silent\nshow-error\n'
+        printf 'connect-timeout = %s\nmax-time = %s\n' "$keito_connect_timeout" "$keito_max_time"
         printf 'header = "Authorization: Bearer %s"\n' "$keito_api_key"
         printf 'header = "Keito-Account-Id: %s"\n' "$keito_account_id"
         printf 'header = "User-Agent: trk-keito/%s"\n' "$version"
-    } >"$keito_curl_config" || _err "cannot write the curl configuration"
+    } >"$keito_curl_config" || _err "cannot write curl configuration"
     keito_body_file="$work_directory/response.json"
+    keito_header_file="$work_directory/response.headers"
+    : >>"$logfile" || _err "cannot write API log: [$logfile]"
 }
 
 _keito_error_message() {
     jq -r '[.error_description? // empty, .error? // empty, .message? // empty]
-           | map(select(. != null and . != ""))
-           | if length == 0 then "no error description" else .[0] end' \
-        "$keito_body_file" 2>/dev/null || printf 'unreadable response\n'
+        | map(select(. != null and . != ""))
+        | if length == 0 then "no error description" else .[0] end' \
+        "$keito_body_file" 2>/dev/null || printf '%s\n' 'unreadable response'
 }
 
-# Performs one request with retries. --fail is deliberately not used: the
-# error envelope is needed to tell a locked entry from a bad token.
-# Leaves the body in $keito_body_file and the status in $keito_status.
+_retry_delay() {
+    retry_default=$1
+    retry_header=$(awk 'tolower($1) == "retry-after:" { gsub("\\r", "", $2); print $2; exit }' \
+        "$keito_header_file")
+    case $retry_header in ''|*[!0-9]*) printf '%s\n' "$retry_default" ;; *) printf '%s\n' "$retry_header" ;; esac
+}
+
+# GET and DELETE are retried. POST is intentionally single-shot.
 _keito_request() {
-    request_method=$1
-    request_url=$2
-    request_payload=${3:-}
-
-    request_attempt=1
-    request_backoff=1
+    request_method=$1; request_url=$2; request_payload=${3:-}; request_retryable=0
+    case $request_method in GET|DELETE) request_retryable=1 ;; esac
+    request_attempt=1; request_backoff=1
     while :; do
-        set -- --config "$keito_curl_config" \
-            --request "$request_method" \
-            --output "$keito_body_file" \
-            --write-out '%{http_code}'
+        : >"$keito_body_file"; : >"$keito_header_file"
+        set -- --config "$keito_curl_config" --request "$request_method" \
+            --output "$keito_body_file" --dump-header "$keito_header_file" --write-out '%{http_code}'
         if [ -n "$request_payload" ]; then
-            set -- "$@" --header 'Content-Type: application/json' \
-                --data-binary "@$request_payload"
+            set -- "$@" --header 'Content-Type: application/json' --data-binary "@$request_payload"
         fi
-
         keito_status=$(curl "$@" "$request_url" 2>>"$logfile") || keito_status=000
-        _dbg "$request_method $request_url -> $keito_status"
         printf '%s %s %s -> %s\n' "$(date '+%Y-%m-%dT%H:%M:%S')" \
             "$request_method" "$request_url" "$keito_status" >>"$logfile"
-
+        _dbg "$request_method $request_url -> $keito_status"
         case $keito_status in
             2*) return 0 ;;
-            429|5*|000)
-                if [ "$request_attempt" -ge "$keito_max_attempts" ]; then
-                    return 1
-                fi
-                _warn "keito returned $keito_status, retrying in ${request_backoff}s"
-                sleep "$request_backoff"
-                request_backoff=$((request_backoff * 2))
-                request_attempt=$((request_attempt + 1))
-                ;;
+            408|429|500|502|503|504|000)
+                if [ "$request_retryable" -eq 0 ] || [ "$request_attempt" -ge "$keito_max_attempts" ]; then return 1; fi
+                request_delay=$(_retry_delay "$request_backoff")
+                _warn "Keito returned $keito_status; retrying in ${request_delay}s"
+                sleep "$request_delay"
+                request_backoff=$((request_backoff * 2)); request_attempt=$((request_attempt + 1)) ;;
             *) return 1 ;;
         esac
     done
 }
 
-# Follows the pagination links, emitting one json document per page.
-# links.next is a path, not an absolute url.
 _keito_get_all() {
     page_url=$1
     while [ -n "$page_url" ]; do
-        _keito_request GET "$page_url" ||
-            _err "keito GET failed with $keito_status: $(_keito_error_message)"
-        cat "$keito_body_file"
-        printf '\n'
-        page_next=$(jq -r '.links.next // empty' "$keito_body_file") ||
-            _err "unexpected keito response"
+        _keito_request GET "$page_url" || _err "Keito GET failed ($keito_status): $(_keito_error_message)"
+        cat "$keito_body_file"; printf '\n'
+        page_next=$(jq -r '.links.next // empty' "$keito_body_file") || _err "unexpected pagination response"
         case $page_next in
             '') page_url= ;;
-            http*) page_url=$page_next ;;
             /*) page_url="$keito_origin$page_next" ;;
+            "$keito_origin"/*) page_url=$page_next ;;
+            http://*|https://*) _err "refusing cross-origin pagination link: [$page_next]" ;;
             *) page_url="$keito_origin/$page_next" ;;
         esac
     done
 }
 
 _keito_resolve_user() {
-    [ -n "$keito_user_id" ] && return 0
     if [ -n "${TRK_KEITO_USER_ID:-}" ]; then
-        keito_user_id=$TRK_KEITO_USER_ID
-        return 0
-    fi
-    if [ -s "$identity_cache" ]; then
-        keito_user_id=$(cat "$identity_cache")
-        [ -n "$keito_user_id" ] && return 0
+        _is_id "$TRK_KEITO_USER_ID" || _err "invalid TRK_KEITO_USER_ID: [$TRK_KEITO_USER_ID]"
+        keito_user_id=$TRK_KEITO_USER_ID; return 0
     fi
     _keito_request GET "$keito_api/users/me" ||
         _err "cannot read /users/me ($keito_status): $(_keito_error_message)"
     keito_user_id=$(jq -r '.id // .user.id // empty' "$keito_body_file")
-    [ -n "$keito_user_id" ] || _err "no user id in the /users/me response"
-    _setup_cache_directory
-    printf '%s\n' "$keito_user_id" >"$identity_cache"
-    _dbg "keito user id: [$keito_user_id]"
+    _is_id "$keito_user_id" || _err "invalid user id in /users/me response"
 }
 
-# Writes: spent_date TAB hours TAB entry_id TAB task_id TAB project_id TAB source TAB notes
-# join("\t") and not @tsv: @tsv escapes backslashes, which would make a note
-# containing one differ from its trk record on every run.
-_keito_time_entries_tsv() {
-    entries_output=$1
-    _keito_resolve_user
-
+# Output, ASCII-US separated: day hours entry task project source owned notes
+_keito_time_entries_machine() {
+    entries_output=$1; _keito_resolve_user
     entries_url="$keito_api/time_entries?per_page=100&user_id=$keito_user_id"
     [ -n "$range_from" ] && entries_url="$entries_url&from=$range_from"
     [ -n "$range_to" ] && entries_url="$entries_url&to=$range_to"
-
-    entries_raw="$work_directory/time-entries.json"
+    entries_raw="$work_directory/time-entries.jsonl"
     _keito_get_all "$entries_url" >"$entries_raw"
-
     entries_running=$(jq -r '[.time_entries[] | select(.is_running)] | length' "$entries_raw" |
-        awk '{ total += $1 } END { print total + 0 }')
-    [ "$entries_running" -gt 0 ] &&
-        _warn "$entries_running running keito timer(s) ignored"
-
-    jq -r '
-        .time_entries[]
-        | select(.is_running | not)
-        | [ .spent_date,
-            (.hours | tostring),
-            (.id | tostring),
-            ((.task_id // .task.id) | tostring),
-            ((.project_id // .project.id) | tostring),
-            (.source // ""),
-            ((.notes // "") | gsub("[\\t\\r\\n]"; " "))
-          ] | join("\t")' "$entries_raw" >"$entries_output" ||
-        _err "cannot parse the keito time entries"
+        awk '{ n += $1 } END { print n + 0 }') || _err "cannot parse Keito entries"
+    [ "$entries_running" -eq 0 ] || _warn "$entries_running running Keito timer(s) ignored"
+    jq -r --arg sep "$separator" --arg integration "$integration_name" '
+        .time_entries[] | select(.is_running | not)
+        | ((.metadata.integration? // "") | tostring) as $owner
+        | (($owner == $integration) or ($owner | startswith($integration + "/"))) as $owned
+        | [ (.spent_date // "" | tostring), (.hours | tostring), (.id // "" | tostring),
+            (.task_id // .task.id // "" | tostring),
+            (.project_id // .project.id // "" | tostring),
+            (.source // "" | tostring), ($owned | tostring),
+            ((.notes // "" | tostring) | gsub("[\\t\\r\\n]"; " ") | gsub($sep; " ")) ]
+        | join($sep)' "$entries_raw" >"$entries_output" || _err "cannot normalise Keito entries"
 }
 
 _keito_add_entry() {
-    add_day=$1
-    add_hours=$2
-    add_task_id=$3
-    add_project_id=$4
-    add_notes=$5
-    add_billable=$6
-
+    add_day=$1; add_hours=$2; add_task_id=$3; add_project_id=$4; add_notes=$5; add_billable=$6
     add_payload="$work_directory/payload.json"
-    jq -n \
-        --arg project_id "$add_project_id" \
-        --arg task_id "$add_task_id" \
-        --arg spent_date "$add_day" \
-        --argjson hours "$add_hours" \
-        --arg notes "$add_notes" \
-        --arg source "$keito_source" \
-        --argjson billable "$add_billable" \
-        --arg integration "trk-keito/$version" \
+    jq -n --arg project_id "$add_project_id" --arg task_id "$add_task_id" \
+        --arg spent_date "$add_day" --argjson hours "$add_hours" --arg notes "$add_notes" \
+        --arg source "$keito_source" --argjson billable "$add_billable" \
+        --arg integration "$integration_name" --arg integration_version "$version" \
         '{project_id: $project_id, task_id: $task_id, spent_date: $spent_date,
           hours: $hours, notes: $notes, source: $source, billable: $billable,
-          metadata: {integration: $integration}}' \
-        >"$add_payload" 2>/dev/null ||
-        _err "cannot build the request payload for [$add_day $add_hours $add_task_id]"
-
+          metadata: {integration: $integration, integration_version: $integration_version}}' \
+        >"$add_payload" 2>/dev/null || _err "cannot build create payload"
     _keito_request POST "$keito_api/time_entries" "$add_payload" && return 0
-    keito_last_error=$(_keito_error_message)
-    return 1
+    keito_last_error=$(_keito_error_message); return 1
 }
 
 _keito_delete_entry() {
     _keito_request DELETE "$keito_api/time_entries/$1" && return 0
-    keito_last_error=$(_keito_error_message)
-    return 1
+    [ "$keito_status" = 404 ] && return 0
+    keito_last_error=$(_keito_error_message); return 1
 }
 
-# --- project and task assignments ------------------------------------------
-# Harvest exposes one nested /users/me/project_assignments call. Keito keeps
-# clients, projects and tasks apart, and tasks are workspace-level objects
-# reused across projects, so the cache is built from /clients, /projects and
-# one /tasks call per project.
+# --- inventories -----------------------------------------------------------
 
-_fetch_assignments() {
-    _setup_cache_directory
-    _keito_require_env
+_refresh_projects() {
+    projects_new="$work_directory/projects.jsonl"
+    _keito_get_all "$keito_api/projects?is_active=true&per_page=100" >"$projects_new"
+    jq -e '.projects | arrays' "$projects_new" >/dev/null || _err "unexpected projects response"
+    mv "$projects_new" "$projects_cache" || _err "cannot update project cache"
+}
+_refresh_tasks() {
+    tasks_new="$work_directory/tasks.jsonl"
+    _keito_get_all "$keito_api/tasks?is_active=true&per_page=100" >"$tasks_new"
+    jq -e '.tasks | arrays' "$tasks_new" >/dev/null || _err "unexpected tasks response"
+    mv "$tasks_new" "$tasks_cache" || _err "cannot update task cache"
+}
+_ensure_projects() { [ -s "$projects_cache" ] || _refresh_projects; }
+_ensure_tasks() { [ -s "$tasks_cache" ] || _refresh_tasks; }
 
-    clients_raw="$work_directory/clients.json"
-    projects_raw="$work_directory/projects.json"
-    _dbg "fetching clients"
-    _keito_get_all "$keito_api/clients?per_page=100" >"$clients_raw"
-    _dbg "fetching projects"
-    _keito_get_all "$keito_api/projects?is_active=true&per_page=100" >"$projects_raw"
-
-    jq -r '.clients[]? | [(.id | tostring), (.name // "")] | join("\t")' \
-        "$clients_raw" >"$work_directory/clients.tsv" ||
-        _err "cannot parse the keito clients"
-
-    jq -r '.projects[]? | [(.id | tostring), (.client_id // .client.id // "" | tostring),
-                           (.code // ""), (.name // "")] | join("\t")' \
-        "$projects_raw" >"$work_directory/projects.tsv" ||
-        _err "cannot parse the keito projects"
-
-    assignments_new="$work_directory/assignments.txt"
-    : >"$assignments_new"
-    project_count=0
-    while IFS="$tab" read -r project_id project_client_id project_code project_name; do
-        [ -n "$project_id" ] || continue
-        project_count=$((project_count + 1))
-        _dbg "fetching tasks for project [$project_id] $project_name"
-        client_name=$(awk -F'\t' -v id="$project_client_id" \
-            '$1 == id { print $2; exit }' "$work_directory/clients.tsv")
-
-        tasks_raw="$work_directory/tasks.json"
-        _keito_get_all "$keito_api/tasks?project_id=$project_id&is_active=true&per_page=100" \
-            >"$tasks_raw"
-        jq -r --arg separator "$assignment_separator" \
-            --arg client_id "$project_client_id" \
-            --arg client_name "$client_name" \
-            --arg project_id "$project_id" \
-            --arg project_code "$project_code" \
-            --arg project_name "$project_name" '
-            .tasks[]?
-            | [ ("cid:" + $client_id),
-                ("pid:" + $project_id),
-                ("tid:" + (.id | tostring)),
-                $client_name,
-                $project_code,
-                $project_name,
-                (.name // "")
-              ]
-            | map(gsub("[\\t\\r\\n]"; " ") | gsub($separator; " "))
-            | join($separator)' "$tasks_raw" >>"$assignments_new" ||
-            _err "cannot parse the keito tasks for project [$project_id]"
-    done <"$work_directory/projects.tsv"
-
-    _dbg "cached tasks for $project_count project(s)"
-    LC_ALL=C sort -t "$assignment_separator" -k4,4 -k5,5 -k6,6 "$assignments_new" \
-        >"$assignments_cache.new" || _err "cannot sort the task assignments"
-    mv "$assignments_cache.new" "$assignments_cache" ||
-        _err "cannot update the task assignment cache"
+print_projects() {
+    refresh_projects=$1; shift; projects_pattern=$*
+    _keito_setup; [ -z "$refresh_projects" ] || _refresh_projects; _ensure_projects
+    projects_display="$work_directory/projects.txt"
+    jq -r --arg tag "$trk_project_tag:" '
+        .projects[] | [ ($tag + (.id | tostring)),
+        (.client.name // .client_name // .client_id // "" | tostring),
+        (.code // "" | tostring), (.name // "" | tostring) ] | join(" | ")' \
+        "$projects_cache" | LC_ALL=C sort >"$projects_display" || _err "cannot parse project cache"
+    if [ -n "$projects_pattern" ]; then grep -i -e "$projects_pattern" "$projects_display"; else cat "$projects_display"; fi
 }
 
-list_assignments() {
-    if [ -n "$1" ] || [ ! -s "$assignments_cache" ]; then
-        _dbg "refreshing the task assignment cache"
-        _fetch_assignments
-    fi
-    cat "$assignments_cache"
+print_tasks() {
+    refresh_tasks=$1; shift; tasks_pattern=$*
+    _keito_setup; [ -z "$refresh_tasks" ] || _refresh_tasks; _ensure_tasks
+    tasks_display="$work_directory/tasks.txt"
+    jq -r --arg tag "$trk_task_tag:" '
+        .tasks[] | [ ($tag + (.id | tostring)), (.name // "" | tostring) ] | join(" | ")' \
+        "$tasks_cache" | LC_ALL=C sort >"$tasks_display" || _err "cannot parse task cache"
+    if [ -n "$tasks_pattern" ]; then grep -i -e "$tasks_pattern" "$tasks_display"; else cat "$tasks_display"; fi
 }
 
-print_assignments() {
-    assignments_refresh=$1
-    shift
-    assignments_pattern=$*
-    [ -n "$assignments_pattern" ] || assignments_pattern='^'
-    list_assignments "$assignments_refresh" |
-        sed "s/$assignment_separator/ | /g" |
-        grep -i -e "$assignments_pattern"
-}
-
-# Writes: task_id TAB project_id TAB project_count
-# project_count is how many projects share that task, so the caller can tell a
-# safe default from an ambiguous one.
-_task_project_map() {
-    list_assignments '' |
-        awk -F"$assignment_separator" '
-            {
-                task_id = $3
-                project_id = $2
-                sub(/^tid:/, "", task_id)
-                sub(/^pid:/, "", project_id)
-                if (task_id == "" || project_id == "") next
-                if (!((task_id SUBSEP project_id) in pairs)) {
-                    pairs[task_id SUBSEP project_id] = 1
-                    count[task_id]++
-                    if (count[task_id] == 1) first[task_id] = project_id
-                }
-            }
-            END {
-                for (task_id in count)
-                    print task_id "\t" first[task_id] "\t" count[task_id]
-            }'
-}
-
-_task_project_map_file() {
-    if [ ! -s "$work_directory/task-project.map" ]; then
-        _task_project_map >"$work_directory/task-project.map"
-    fi
-    printf '%s\n' "$work_directory/task-project.map"
+refresh_inventories() {
+    [ "$#" -eq 0 ] || _err "refresh takes no arguments"
+    _keito_setup; _refresh_projects; _refresh_tasks
+    project_count=$(jq -r '[.projects[]] | length' "$projects_cache" | awk '{ n += $1 } END { print n + 0 }')
+    task_count=$(jq -r '[.tasks[]] | length' "$tasks_cache" | awk '{ n += $1 } END { print n + 0 }')
+    _info "inventories refreshed: $project_count project(s), $task_count task(s)"
 }
 
 # --- normalisation ---------------------------------------------------------
-# Both sides are reduced to the same shape before being compared:
-#   spent_date TAB hours TAB task_id TAB project_id TAB notes
-# Tags are dropped, whitespace is squeezed, hours are rounded. Comparing
-# canonical lines keeps the matching to one pass per side.
 
 _normalization_awk='
     function is_tag(word) {
-        return word ~ /^#[[:alnum:]_][[:alnum:]_-]*(:[[:alnum:]_][[:alnum:]_-]*)?$/
+        return word ~ /^\+[[:alnum:]_][[:alnum:]_-]*(:[[:alnum:]_][[:alnum:]_-]*)?$/
     }
-    function clean_notes(text,   parts, count, index_, result) {
-        count = split(text, parts, /[ \t]+/)
-        result = ""
-        for (index_ = 1; index_ <= count; index_++) {
-            if (parts[index_] == "" || is_tag(parts[index_])) continue
-            result = (result == "" ? parts[index_] : result " " parts[index_])
-        }
+    function normalise_notes(text,   parts, count, i, result) {
+        count = split(text, parts, /[ \t]+/); result = ""
+        for (i = 1; i <= count; i++) if (parts[i] != "") result = result == "" ? parts[i] : result " " parts[i]
         return result
     }'
 
-# Writes the canonical form plus a trailing billable flag, which the plan
-# carries to the create call but leaves out of the comparison key.
-_trk_entries_tsv() {
-    trk_entries_output=$1
-    trk_entries_filter=$2
-
-    # An unreadable trk file must never look like "trk has no records", or a
-    # sync would offer to wipe every keito entry in the period.
-    [ -r "$trkfile" ] || _err "cannot read the trk file: [$trkfile]"
-
+# Output: day hours task project notes billable
+_trk_entries_machine() {
+    trk_entries_output=$1; trk_entries_filter=$2; trk_raw="$work_directory/trk-records.txt"
     if [ -n "$trk_entries_filter" ]; then
-        trk_entries_source=$(_trk l --grep "$trk_entries_filter")
+        _trk l --grep "$trk_entries_filter" >"$trk_raw"; trk_list_status=$?
+        [ "$trk_list_status" -le 1 ] || _err "cannot list filtered trk records"
     else
-        trk_entries_source=$(_trk l)
+        _trk l >"$trk_raw" || _err "cannot list trk records"
     fi
-
-    printf '%s\n' "$trk_entries_source" |
-        grep -e "$trk_task_tag:" |
-        awk -v map_file="$(_task_project_map_file)" \
-            -v task_tag="$trk_task_tag:" \
-            -v project_tag="$trk_project_tag:" \
-            -v decimals="$keito_hours_decimals" \
-            -v program="$scriptname" \
-            "$_normalization_awk"'
-            BEGIN {
-                while ((getline map_line < map_file) > 0) {
-                    split(map_line, map_parts, "\t")
-                    project_of_task[map_parts[1]] = map_parts[2]
-                    projects_per_task[map_parts[1]] = map_parts[3] + 0
-                }
-                close(map_file)
-            }
-            function valid_id(value) {
-                return value ~ /^[A-Za-z0-9_][A-Za-z0-9_-]*$/
-            }
-            {
-                day = $1
-                hours = $2
-                task_id = ""
-                project_id = ""
-                billable = "false"
-                notes = ""
-                for (field = 3; field <= NF; field++) {
-                    if (index($field, task_tag) == 1) {
-                        task_id = substr($field, length(task_tag) + 1)
-                        continue
-                    }
-                    if (index($field, project_tag) == 1) {
-                        project_id = substr($field, length(project_tag) + 1)
-                        continue
-                    }
-                    if ($field == "#billable") {
-                        billable = "true"
-                        continue
-                    }
-                    if (is_tag($field)) continue
-                    notes = (notes == "" ? $field : notes " " $field)
-                }
-                if (!valid_id(task_id)) {
-                    printf "%s: warn: skipped, invalid task id: %s\n", program, $0 > "/dev/stderr"
-                    next
-                }
-                if (project_id == "") {
-                    if (projects_per_task[task_id] == 1) {
-                        project_id = project_of_task[task_id]
-                    } else if (projects_per_task[task_id] > 1) {
-                        printf "%s: warn: skipped, task %s belongs to %d projects, add a %s tag: %s\n", \
-                            program, task_id, projects_per_task[task_id], project_tag, $0 > "/dev/stderr"
-                        next
-                    }
-                }
-                if (!valid_id(project_id)) {
-                    printf "%s: warn: skipped, no project for task %s: %s\n", program, task_id, $0 > "/dev/stderr"
-                    next
-                }
-                printf "%s\t%.*f\t%s\t%s\t%s\t%s\n", day, decimals, hours, task_id, project_id, notes, billable
-            }' >"$trk_entries_output"
-}
-
-# Reduces the keito side to: day hours task project notes entry_id source
-_keito_entries_key_tsv() {
-    key_input=$1
-    key_output=$2
-    awk -F'\t' -v decimals="$keito_hours_decimals" "$_normalization_awk"'
+    awk -v OFS="$separator" -v sep="$separator" -v task_marker="$trk_task_tag" \
+        -v project_marker="$trk_project_tag" -v billable_marker="$trk_billable_tag" \
+        -v decimals="$keito_hours_decimals" -v program="$scriptname" \
+        "$_normalization_awk"'
+        function valid_id(value) { return value ~ /^[A-Za-z0-9_][A-Za-z0-9_-]*$/ }
         {
-            printf "%s\t%.*f\t%s\t%s\t%s\t%s\t%s\n", \
-                $1, decimals, $2, $4, $5, clean_notes($7), $3, $6
-        }' "$key_input" >"$key_output"
+            day=$1; hours=$2; task_id=""; project_id=""; notes=""; billable="false"
+            task_count=0; project_count=0
+            for (field=3; field<=NF; field++) {
+                if ($field == task_marker || index($field, task_marker ":") == 1) {
+                    task_count++; task_id=$field == task_marker ? "" : substr($field,length(task_marker)+2); continue
+                }
+                if ($field == project_marker || index($field, project_marker ":") == 1) {
+                    project_count++; project_id=$field == project_marker ? "" : substr($field,length(project_marker)+2); continue
+                }
+                if ($field == billable_marker) { billable="true"; continue }
+                if (is_tag($field)) continue
+                notes=notes == "" ? $field : notes " " $field
+            }
+            intended=task_count>0 || project_count>0
+            if (!intended) next
+            if (task_count != 1 || project_count != 1 || !valid_id(task_id) || !valid_id(project_id)) {
+                printf "%s: error: invalid Keito mapping: %s\n",program,$0 > "/dev/stderr"; invalid++; next
+            }
+            notes=normalise_notes(notes); gsub(sep," ",notes)
+            printf "%s%s%.*f%s%s%s%s%s%s%s%s\n",day,OFS,decimals,hours,OFS,task_id,OFS,project_id,OFS,notes,OFS,billable
+        }
+        END { if (invalid) exit 1 }' "$trk_raw" >"$trk_entries_output" ||
+        _err "one or more trk records have an invalid Keito mapping"
 }
 
-# --- plan ------------------------------------------------------------------
-# Plan file, tab separated: op day hours task_id project_id entry_id notes billable
-# entry_id is '-' when absent. Notes come before the flag so that an empty
-# value cannot be swallowed by the shell's IFS handling on read.
-
-_build_plan() {
-    plan_output=$1
-
-    _dbg "reading trk records"
-    trk_selected="$work_directory/trk-selected.tsv"
-    trk_scope="$work_directory/trk-scope.tsv"
-    _trk_entries_tsv "$trk_selected" "$filter_pattern"
-    if [ "$filter_selects_period" -eq 1 ]; then
-        cp "$trk_selected" "$trk_scope"
-    else
-        # A grep filter picks records, not a period: deciding what to delete
-        # would need the records it does not select, so deletions are skipped.
-        : >"$trk_scope"
-    fi
-
-    _dbg "reading keito entries"
-    keito_raw="$work_directory/keito-raw.tsv"
-    keito_keyed="$work_directory/keito-keyed.tsv"
-    _keito_time_entries_tsv "$keito_raw"
-    _keito_entries_key_tsv "$keito_raw" "$keito_keyed"
-
-    _dbg "matching $(wc -l <"$trk_selected") trk record(s) against $(wc -l <"$keito_keyed") keito entry/entries"
-
-    # Two independent multiset comparisons: identical records are matched one
-    # to one instead of collapsing, so repeated entries sync correctly.
-    # The reference side is loaded in BEGIN rather than with the usual
-    # FNR == NR idiom, which misreads the first record when a side is empty.
-    unmanaged_file="$work_directory/unmanaged.count"
-    : >"$unmanaged_file"
-    {
-        awk -F'\t' -v OFS='\t' -v reference="$keito_keyed" '
-            BEGIN {
-                while ((getline reference_line < reference) > 0) {
-                    split(reference_line, parts, FS)
-                    available[parts[1] FS parts[2] FS parts[3] FS parts[4] FS parts[5]]++
-                }
-                close(reference)
+# Input: day hours entry task project source owned notes
+# Output: day hours task project notes entry source owned
+_keito_entries_key_machine() {
+    key_input=$1; key_output=$2
+    awk -F"$separator" -v OFS="$separator" -v decimals="$keito_hours_decimals" \
+        -v program="$scriptname" "$_normalization_awk"'
+        function valid_id(v) { return v ~ /^[A-Za-z0-9_][A-Za-z0-9_-]*$/ }
+        function valid_date(v) { return v ~ /^[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]$/ }
+        function valid_hours(v) { return v ~ /^[+-]?[0-9]+([.][0-9]+)?([eE][+-]?[0-9]+)?$/ }
+        {
+            if (NF != 8 || !valid_date($1) || !valid_hours($2) || !valid_id($3) ||
+                !valid_id($4) || !valid_id($5) || ($7 != "true" && $7 != "false")) {
+                printf "%s: error: malformed Keito entry: %s\n",program,$0 > "/dev/stderr"; invalid++; next
             }
-            {
-                key = $1 FS $2 FS $3 FS $4 FS $5
-                if (used[key] < available[key]) {
-                    used[key]++
-                    print "=", $1, $2, $3, $4, "-", $5, $6
-                } else {
-                    print "+", $1, $2, $3, $4, "-", $5, $6
-                }
-            }' "$trk_selected"
+            notes=normalise_notes($8)
+            printf "%s%s%.*f%s%s%s%s%s%s%s%s%s%s%s%s\n",$1,OFS,decimals,$2,OFS,$4,OFS,$5,OFS,notes,OFS,$3,OFS,$6,OFS,$7
+        }
+        END { if (invalid) exit 1 }' "$key_input" >"$key_output" ||
+        _err "cannot safely normalise Keito entries"
+}
 
+# --- plan and sync ---------------------------------------------------------
+
+# Plan: op day hours task project entry notes billable source
+_build_plan() {
+    plan_output=$1; _check_trkfile
+    trk_selected="$work_directory/trk-selected.data"; trk_scope="$work_directory/trk-scope.data"
+    _trk_entries_machine "$trk_selected" "$filter_pattern"
+    if [ "$filter_selects_period" -eq 1 ]; then cp "$trk_selected" "$trk_scope"; else : >"$trk_scope"; fi
+    keito_raw="$work_directory/keito-raw.data"; keito_keyed="$work_directory/keito-keyed.data"
+    _keito_time_entries_machine "$keito_raw"; _keito_entries_key_machine "$keito_raw" "$keito_keyed"
+    _dbg "matching $(wc -l <"$trk_selected") trk record(s) and $(wc -l <"$keito_keyed") Keito entries"
+    unmanaged_file="$work_directory/unmanaged.count"; : >"$unmanaged_file"
+    {
+        awk -F"$separator" -v OFS="$separator" -v reference="$keito_keyed" '
+            BEGIN { while ((getline line < reference)>0) { split(line,p,FS); available[p[1] FS p[2] FS p[3] FS p[4] FS p[5]]++ } close(reference) }
+            { key=$1 FS $2 FS $3 FS $4 FS $5
+              if (used[key] < available[key]) { used[key]++; print "=",$1,$2,$3,$4,"-",$5,$6,"-" }
+              else print "+",$1,$2,$3,$4,"-",$5,$6,"-" }' "$trk_selected"
         if [ "$filter_selects_period" -eq 1 ]; then
-            awk -F'\t' -v OFS='\t' -v reference="$trk_scope" \
-                -v managed="$keito_managed_sources" \
-                -v unmanaged_file="$unmanaged_file" '
-                BEGIN {
-                    while ((getline reference_line < reference) > 0) {
-                        split(reference_line, parts, FS)
-                        available[parts[1] FS parts[2] FS parts[3] FS parts[4] FS parts[5]]++
-                    }
-                    close(reference)
-                    split(managed, managed_parts, /[ ,]+/)
-                    for (i in managed_parts)
-                        if (managed_parts[i] != "") is_managed[managed_parts[i]] = 1
-                }
-                {
-                    key = $1 FS $2 FS $3 FS $4 FS $5
-                    if (used[key] < available[key]) {
-                        used[key]++
-                        next
-                    }
-                    if (!($7 in is_managed)) {
-                        unmanaged[$7]++
-                        next
-                    }
-                    print "-", $1, $2, $3, $4, $6, $5, "-"
-                }
+            awk -F"$separator" -v OFS="$separator" -v reference="$trk_scope" -v unmanaged_file="$unmanaged_file" '
+                BEGIN { while ((getline line < reference)>0) { split(line,p,FS); available[p[1] FS p[2] FS p[3] FS p[4] FS p[5]]++ } close(reference) }
+                { key=$1 FS $2 FS $3 FS $4 FS $5
+                  if (used[key] < available[key]) { used[key]++; next }
+                  if ($8 != "true") { source=$7==""?"unknown":$7; unmanaged[source]++; next }
+                  print "-",$1,$2,$3,$4,$6,$5,"-",$7 }
                 END {
                     for (source in unmanaged)
-                        printf "%s %d\n", source, unmanaged[source] >> unmanaged_file
+                        printf "%s %d\n", source, unmanaged[source] > unmanaged_file
                 }' "$keito_keyed"
         fi
-    } | LC_ALL=C sort -t "$tab" -k2,2 -k1,1 -k3,3 >"$plan_output"
-
+    } | LC_ALL=C sort -t "$separator" -k2,2 -k1,1 -k3,3 >"$plan_output"
     if [ -s "$unmanaged_file" ]; then
         while read -r unmanaged_source unmanaged_count; do
-            _info "left alone: $unmanaged_count entry/entries with source '$unmanaged_source' not matching any trk record"
+            _info "left alone: $unmanaged_count unmatched entry/entries from '$unmanaged_source'"
         done <"$unmanaged_file"
     fi
-
     if [ "$filter_selects_period" -eq 1 ]; then
         [ -s "$trk_scope" ] || [ ! -s "$keito_keyed" ] ||
-            _warn "no trk record matches this filter: every managed keito entry in the period is up for deletion"
+            _warn "no mirrored trk record in scope; every unmatched managed entry is a deletion candidate"
     else
-        _warn "grep filter: only additions are computed, deletions are skipped"
+        _warn "grep filter: additions only; deletions skipped"
     fi
 }
 
 _print_plan() {
-    awk -F'\t' '
-        {
-            symbol = $1
-            if (symbol == "=") symbol = "\342\234\223"
-            line = symbol " " $2 " " $3 " tid:" $4 " pid:" $5
-            if ($6 != "-") line = line " eid:" $6
-            if ($7 != "") line = line " " $7
-            print line
-        }' "$1"
+    awk -F"$separator" '{
+        symbol=$1=="="?"\342\234\223":$1
+        line=symbol " " $2 " " $3 " tid:" $4 " pid:" $5
+        if ($6!="-") line=line " eid:" $6
+        if ($8=="true") line=line " billable"
+        if ($9!="-") line=line " src:" $9
+        if ($7!="") line=line " " $7
+        print line
+    }' "$1"
 }
 
 plan() {
-    _parse_filter "$@"
-    _keito_require_env
-    _resolve_date_range
-
-    plan_file="$work_directory/plan.tsv"
-    _build_plan "$plan_file"
-
-    _info "plan:"
-    _print_plan "$plan_file" | grep -e '^✓' || :
-    printf '\n'
-    _print_plan "$plan_file" | grep -v -e '^✓' || :
+    _parse_filter "$@"; _resolve_date_range; _keito_setup
+    plan_file="$work_directory/plan.data"; _build_plan "$plan_file"
+    _info "plan:"; _print_plan "$plan_file" | grep -e '^✓' || :
+    printf '\n'; _print_plan "$plan_file" | grep -v -e '^✓' || :
 }
 
 sync() {
-    _parse_filter "$@"
-    _keito_require_env
-    _resolve_date_range
-    _setup_cache_directory
-
-    plan_file="$work_directory/plan.tsv"
-    _build_plan "$plan_file"
-
-    pending_file="$work_directory/pending.tsv"
-    grep -v -e "^=$tab" "$plan_file" >"$pending_file" || :
-    if [ ! -s "$pending_file" ]; then
-        _info "nothing to sync"
-        return 0
-    fi
-
-    _print_plan "$pending_file"
-    printf '\n'
-
-    deletion_count=$(grep -c -e "^-$tab" "$pending_file" || :)
+    _parse_filter "$@"; _resolve_date_range; _keito_setup
+    plan_file="$work_directory/plan.data"; _build_plan "$plan_file"
+    pending_file="$work_directory/pending.data"
+    grep -v -e "^=$separator" "$plan_file" >"$pending_file" || :
+    if [ ! -s "$pending_file" ]; then _info "nothing to sync"; return 0; fi
+    _print_plan "$pending_file"; printf '\n'
+    deletion_count=$(grep -c -e "^-$separator" "$pending_file" || :)
     if [ "$deletion_count" -gt 0 ]; then
-        _confirm "$deletion_count keito entry/entries will be deleted, continue?" ||
-            _err "aborted"
+        _confirm "$deletion_count managed Keito entry/entries will be deleted, continue?" ||
+            _err "deletion not authorised; rerun interactively or pass -y"
     fi
 
-    _info "syncing keito..."
-    sync_added=0
-    sync_deleted=0
-    sync_failed=0
-    while IFS="$tab" read -r sync_op sync_day sync_hours sync_task sync_project sync_entry sync_notes sync_billable; do
-        case $sync_op in
-            +)
-                [ -n "$sync_billable" ] || sync_billable=false
-                if _keito_add_entry "$sync_day" "$sync_hours" "$sync_task" \
-                    "$sync_project" "$sync_notes" "$sync_billable"; then
-                    sync_added=$((sync_added + 1))
-                    _info "added: $sync_day $sync_hours tid:$sync_task pid:$sync_project $sync_notes"
-                else
-                    sync_failed=$((sync_failed + 1))
-                    _warn "cannot add ($keito_status): $sync_day $sync_hours tid:$sync_task pid:$sync_project - $keito_last_error"
-                fi
-                ;;
-            -)
-                if _keito_delete_entry "$sync_entry"; then
-                    sync_deleted=$((sync_deleted + 1))
-                    _info "deleted: eid:$sync_entry $sync_day $sync_hours $sync_notes"
-                else
-                    sync_failed=$((sync_failed + 1))
-                    _warn "cannot delete eid:$sync_entry ($keito_status): $keito_last_error"
-                fi
-                ;;
-        esac
+    _info "syncing additions..."; sync_added=0; sync_add_failed=0
+    while IFS="$separator" read -r sync_op sync_day sync_hours sync_task sync_project \
+        sync_entry sync_notes sync_billable sync_source; do
+        [ "$sync_op" = + ] || continue
+        if _keito_add_entry "$sync_day" "$sync_hours" "$sync_task" "$sync_project" "$sync_notes" "$sync_billable"; then
+            sync_added=$((sync_added+1)); _info "added: $sync_day $sync_hours tid:$sync_task pid:$sync_project $sync_notes"
+        else
+            sync_add_failed=$((sync_add_failed+1))
+            _warn "cannot add ($keito_status): $sync_day $sync_hours tid:$sync_task pid:$sync_project - $keito_last_error"
+        fi
     done <"$pending_file"
+    if [ "$sync_add_failed" -gt 0 ]; then
+        _warn "$sync_add_failed addition(s) failed; no deletion attempted"
+        _warn "rerun sync after checking: $logfile"; return 1
+    fi
 
-    _info "sync complete: $sync_added added, $sync_deleted deleted, $sync_failed failed"
-    [ "$sync_failed" -eq 0 ] || {
-        _warn "see the api log: $logfile"
-        return 1
-    }
+    _info "syncing deletions..."; sync_deleted=0; sync_delete_failed=0
+    while IFS="$separator" read -r sync_op sync_day sync_hours sync_task sync_project \
+        sync_entry sync_notes sync_billable sync_source; do
+        [ "$sync_op" = - ] || continue
+        if _keito_delete_entry "$sync_entry"; then
+            sync_deleted=$((sync_deleted+1)); _info "deleted: eid:$sync_entry $sync_day $sync_hours $sync_notes"
+        else
+            sync_delete_failed=$((sync_delete_failed+1))
+            _warn "cannot delete eid:$sync_entry ($keito_status): $keito_last_error"
+        fi
+    done <"$pending_file"
+    _info "sync complete: $sync_added added, $sync_deleted deleted, $sync_delete_failed failed"
+    [ "$sync_delete_failed" -eq 0 ] || { _warn "rerun sync after checking: $logfile"; return 1; }
 }
 
-# --- commands --------------------------------------------------------------
+# --- direct commands -------------------------------------------------------
 
 list_time_entries() {
-    _parse_filter "$@"
-    _keito_require_env
-    _resolve_date_range
-
-    entries_file="$work_directory/keito-entries.tsv"
-    _keito_time_entries_tsv "$entries_file"
-
-    awk -F'\t' '
-        { printf "%s %s eid:%s tid:%s pid:%s src:%s %s\n", $1, $2, $3, $4, $5, $6, $7 }
-    ' "$entries_file" | LC_ALL=C sort
-
-    entries_total=$(awk -F'\t' '{ total += $2 } END { printf "%.4f\n", total + 0 }' "$entries_file")
-    printf '\n'
-    printf 'tot: %s\n' "$(_format_hours "$entries_total")"
+    _parse_filter "$@"; _resolve_date_range; _keito_setup
+    entries_file="$work_directory/list-entries.data"; _keito_time_entries_machine "$entries_file"
+    candidates="$work_directory/list-candidates.data"
+    awk -F"$separator" -v OFS="$separator" '{
+        line=$1 " " $2 " eid:" $3 " tid:" $4 " pid:" $5 " src:" $6
+        if ($7=="true") line=line " managed"
+        if ($8!="") line=line " " $8
+        print $2,line
+    }' "$entries_file" >"$candidates"
+    selected="$work_directory/list-selected.data"
+    if [ "$filter_selects_period" -eq 0 ] && [ -n "$filter_pattern" ]; then
+        grep -e "$filter_pattern" "$candidates" >"$selected" || :
+    else
+        cp "$candidates" "$selected"
+    fi
+    LC_ALL=C sort -t "$separator" -k2,2 "$selected" |
+        awk -F"$separator" '{ print substr($0,index($0,FS)+1) }'
+    entries_total=$(awk -F"$separator" '{ total+=$1 } END { printf "%.4f\n",total+0 }' "$selected")
+    printf '\n'; printf 'tot: %s\n' "$(_format_hours "$entries_total")"
 }
 
 add_time_entry() {
-    entry_project_id=
+    entry_project_id=; entry_billable=false
     while [ "$#" -gt 0 ]; do
         case $1 in
-            -p|--project)
-                [ "$#" -ge 2 ] || _err "--project requires a value"
-                entry_project_id=$2
-                shift 2
-                ;;
-            --)
-                shift
-                break
-                ;;
+            -p|--project) [ "$#" -ge 2 ] || _err "--project requires an id"; entry_project_id=$2; shift 2 ;;
+            -b|--billable) entry_billable=true; shift ;;
+            --) shift; break ;;
             *) break ;;
         esac
     done
-
-    [ "$#" -ge 4 ] || {
-        usage >&2
-        exit 1
-    }
-    _keito_require_env
-
-    entry_day=$1
-    entry_hours=$2
-    entry_task_id=$3
-    shift 3
-
-    _trk_run _validate_date "$entry_day" || _err "date [$entry_day] is not valid"
-    entry_day=$(date -d "$entry_day" '+%Y-%m-%d') ||
-        _err "cannot normalize date [$entry_day]"
-    _trk_run _validate_hours "$entry_hours" ||
-        _err "hours [$entry_hours] is not a valid number"
-    entry_hours=$(_normalize_hours "$entry_hours")
-    _is_id "$entry_task_id" || _err "task id [$entry_task_id] is not valid"
-
-    entry_map=$(_task_project_map_file)
-    # Keito ids are opaque, so a positional project id can only be told from
-    # the notes by looking it up: if the next word is a project this task is
-    # assigned to, take it. Use -p to be explicit.
-    if [ -z "$entry_project_id" ] && [ "$#" -gt 1 ] && _is_id "$1"; then
-        if list_assignments '' | grep -q -e "pid:$1$assignment_separator"; then
-            entry_project_id=$1
-            shift
-        fi
-    fi
+    if [ -n "$entry_project_id" ]; then [ "$#" -ge 3 ] || { usage >&2; exit 1; }
+    else [ "$#" -ge 4 ] || { usage >&2; exit 1; }; fi
+    entry_day=$1; entry_hours=$2; entry_task_id=$3; shift 3
+    if [ -z "$entry_project_id" ]; then entry_project_id=$1; shift; fi
     entry_notes=$*
-
-    if [ -z "$entry_project_id" ]; then
-        entry_project_count=$(awk -F'\t' -v task_id="$entry_task_id" \
-            '$1 == task_id { print $3; exit }' "$entry_map")
-        case ${entry_project_count:-0} in
-            1) entry_project_id=$(awk -F'\t' -v task_id="$entry_task_id" \
-                '$1 == task_id { print $2; exit }' "$entry_map") ;;
-            0) _err "task [$entry_task_id] is not in the cache; refresh with '$scriptname tt'" ;;
-            *) _err "task [$entry_task_id] belongs to $entry_project_count projects; pass -p <project_id>" ;;
-        esac
-        _dbg "resolved project id: [$entry_project_id]"
-    fi
-    _is_id "$entry_project_id" || _err "project id [$entry_project_id] is not valid"
-
-    _setup_cache_directory
-    _keito_add_entry "$entry_day" "$entry_hours" "$entry_task_id" \
-        "$entry_project_id" "$entry_notes" false ||
+    _trk_run _validate_date "$entry_day" || _err "invalid date: [$entry_day]"
+    entry_day=$(date -d "$entry_day" '+%Y-%m-%d') || _err "cannot normalise date"
+    _trk_run _validate_hours "$entry_hours" || _err "invalid hours: [$entry_hours]"
+    entry_hours=$(_normalize_hours "$entry_hours")
+    _is_id "$entry_task_id" || _err "invalid task id: [$entry_task_id]"
+    _is_id "$entry_project_id" || _err "invalid project id: [$entry_project_id]"
+    _keito_setup
+    _keito_add_entry "$entry_day" "$entry_hours" "$entry_task_id" "$entry_project_id" "$entry_notes" "$entry_billable" ||
         _err "cannot add entry ($keito_status): $keito_last_error"
     _info "entry added: $entry_day $entry_hours tid:$entry_task_id pid:$entry_project_id $entry_notes"
 }
 
 delete_time_entry() {
-    [ "$#" -ge 1 ] || _err "an entry id is required"
-    _is_id "$1" || _err "entry id [$1] is not valid"
-    _keito_require_env
-    _setup_cache_directory
-    _keito_delete_entry "$1" ||
+    [ "$#" -eq 1 ] || _err "delete requires exactly one entry id"
+    _is_id "$1" || _err "invalid entry id: [$1]"
+    _keito_setup; _keito_delete_entry "$1" ||
         _err "cannot delete entry [$1] ($keito_status): $keito_last_error"
     _info "entry deleted: $1"
 }
 
+doctor() {
+    [ "$#" -eq 0 ] || _err "doctor takes no arguments"
+    _check_trkfile; _keito_setup; _keito_resolve_user; _refresh_projects; _refresh_tasks
+    project_count=$(jq -r '[.projects[]] | length' "$projects_cache" | awk '{ n+=$1 } END { print n+0 }')
+    task_count=$(jq -r '[.tasks[]] | length' "$tasks_cache" | awk '{ n+=$1 } END { print n+0 }')
+    _info "trk $trk_version: valid"
+    _info "Keito authentication: user $keito_user_id, company $keito_account_id"
+    _info "discovery: $project_count active project(s), $task_count active task(s)"
+    _info "doctor: ok"
+}
+
 main() {
-    [ "$#" -gt 0 ] || {
-        usage
-        exit 0
-    }
-    _check_dependencies
-    _check_trk_version
-    _setup_work_directory
-
-    command_name=$1
-    shift
-
+    [ "$#" -gt 0 ] || { usage; exit 0; }
+    case $1 in
+        h|help|-h|--help) helpmsg; exit 0 ;;
+        -v|--version) printf '%s %s\n' "$scriptname" "$version"; exit 0 ;;
+    esac
+    _check_dependencies; _check_trk_version; _validate_config; _setup_work_directory
+    command_name=$1; shift
     case $command_name in
         l|list) list_time_entries "$@" ;;
-        t|tasks) _keito_require_env && print_assignments '' "$@" ;;
-        tt) _keito_require_env && print_assignments refresh "$@" ;;
+        j|projects) print_projects '' "$@" ;;
+        jj) print_projects refresh "$@" ;;
+        t|tasks) print_tasks '' "$@" ;;
+        tt) print_tasks refresh "$@" ;;
+        refresh) refresh_inventories "$@" ;;
         a|add) add_time_entry "$@" ;;
         d|delete) delete_time_entry "$@" ;;
         p|plan) plan "$@" ;;
         s|sync) sync "$@" ;;
-        h|help|-h|--help) helpmsg ;;
-        -v|--version) printf '%s %s\n' "$scriptname" "$version" ;;
-        run)
-            [ "$#" -gt 0 ] || _err "run requires a command"
-            "$@"
-            ;;
-        *)
-            usage >&2
-            _err "unknown command: [$command_name]"
-            ;;
+        doctor) doctor "$@" ;;
+        run) [ "$#" -gt 0 ] || _err "run requires a command"; "$@" ;;
+        *) usage >&2; _err "unknown command: [$command_name]" ;;
     esac
 }
 
