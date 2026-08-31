@@ -1,374 +1,846 @@
-#! /bin/sh
-version="0.2.0"
-dependencies="curl jq"
-trkfile="${TRK_FILE:-$HOME/.trkfile}"
-trk_workday_hours="${TRK_WORKDAY_HOURS:-8}"
-editor="${EDITOR:-vi}"
-tmpdir="${TMPDIR:-/tmp}"
-logfile="$tmpdir/trk-harvest.log"
-harvest_trk_tag="#hid"
+#!/bin/sh
+
+version="0.3.0"
+required_trk_version="0.6.0"
+dependencies="curl jq trk"
+
+harvest_api="https://api.harvestapp.com/v2"
+harvest_trk_task_tag="#hid"
 harvest_trk_project_tag="#hpid"
 
-# one-character separator
+trkfile="${TRK_FILE:-$HOME/.trkfile}"
+cache_dir="${TRK_HARVEST_CACHE_DIR:-${XDG_CACHE_HOME:-$HOME/.cache}/trk-harvest}"
+project_assignments_cache="$cache_dir/project-assignments.json"
+task_assignments_cache="$cache_dir/task-assignments.txt"
+logfile="${TRK_HARVEST_LOG:-$cache_dir/trk-harvest.log}"
+
+# one-character separator for the task assignment cache
 task_assignment_separator='~'
 
+scriptname=${0##*/}
+tab=$(printf '\t')
+
+# Descriptions, notes and grep patterns must never undergo pathname expansion.
+# Cache and log files hold client names and API payloads: keep them private.
+set -f
+umask 077
+LC_NUMERIC=C
+export LC_NUMERIC
+
+work_directory=
+assume_yes=0
+
 usage() {
-    s="$(basename $0)"
-    printf "Usage [v$version]:
-    $s l [grep_pattern | date_arg]
-        list time entries from harvest, filtering records with grep_pattern or a date_arg if passed.
-        date_arg is any valid value the 'date' command can take, e.g. '-', 'today', 'yesterday', etc.
-        hours spent must be a number and can be decimal: 1, 4.25, 0.5, etc.
+    printf '%s\n' "Usage [v$version]:
+    $scriptname l [--grep|--date] [filter]
+        lists harvest time entries for the period covered by the filter
 
-    $s t [grep_pattern]
-    $s tt [grep_pattern]
-        get harvest tasks assigned to your user
-        the task list is cached in your tmpdir, use 'tt' to force-refresh it
-        you can pass a grep_pattern to filter out the output
+    $scriptname t [pattern]
+    $scriptname tt [pattern]
+        lists the harvest task assignments of your user, filtered by pattern
+        the list is cached; 'tt' forces a refresh
 
-    $s a <date_arg> <hours> <task_id> <project_id> <notes>
-        adds a new entry to the harvest.
+    $scriptname a <date_arg> <hours> <task_id> [project_id] <notes>
+        adds a single time entry to harvest
+    $scriptname d <entry_id>
+        deletes a single time entry from harvest
 
-    $s d <entry_id>
-        deletes a time entry by id from harvest.
+    $scriptname p [--grep|--date] [filter]
+        shows the changes needed to align harvest with the trk records
+    $scriptname s [-y] [--grep|--date] [filter]
+        applies those changes: one-way sync from trk to harvest
 
-    $s p [grep_pattern | date_arg]
-        output the changes that will be made on harvest to align with trk entries
-        for the specified pattern/date_arg
-
-    $s s [grep_pattern | date_arg]
-        one way sync from trk to harvest to align harvest with trk entries
-        for the specified pattern/date_arg
-
-    $s h
+    $scriptname h
         shows extended help
-"
+
+    Every command is also reachable as: trk harvest <command>"
 }
+
 helpmsg() {
-    usage; echo
-    printf "filtering:
-    the l[ist], a[dd], p[lan] and s[ync] commands optionally take a grep pattern or a date arg as input.
-    the grep pattern is obviously grep-compatible a regex.
-    The date arg is a value that is a valid 'date' command 'DATE STRING': something like yesterday, 7 days ago, etc. 
-    $s tries to be smart, e.g.: if the date arg contains 'month' or 'week', then it adjust the resulting filter to grep the entire month/week.
+    usage
+    printf '\n%s\n' "Record mapping:
+    Only trk records carrying a $harvest_trk_task_tag tag are synchronised. The task id comes
+    from $harvest_trk_task_tag:<id>; the project id from $harvest_trk_project_tag:<id> or, when absent, from the
+    cached task assignments. Every other tag is stripped: what reaches the
+    harvest 'notes' field is the description without tags, with whitespace
+    squeezed to single spaces.
 
-task mapping:
-    WIP documentation
+    2026-08-31 1.5 #billable #client:acme $harvest_trk_task_tag:25875920 fix the importer
+        -> spent_date 2026-08-31, hours 1.50, task 25875920, notes 'fix the importer'
 
-env vars:
-    - TRK_HARVEST_USER_ID: set it to your harvest user id [cur: ${TRK_HARVEST_USER_ID:-unset}]
-    - TRK_HARVEST_ACCOUNT_ID: set it to your harvest account id [cur: ${TRK_HARVEST_ACCOUNT_ID:-unset}]
-    - TRK_HARVEST_ACCESS_TOKEN: set it to your harvest access token [cur: ${TRK_HARVEST_ACCESS_TOKEN:-unset}]
-"
-}
-_now() { date '+%Y-%m-%dT%H:%M:%S'; }
-_err() { printf "%s: error: %s\n" "$(basename "$0")" "$1" >&2; exit 1; }
-_warn() { printf "%s: warn: %s\n" "$(basename "$0")" "$1" >&2; }
-_info() { printf "%s: %s\n" "$(basename "$0")" "$1" >&2; }
-_dbg() { [ "$TRK_DEBUG" ] && printf "%s %s: debug: %s\n" "$(_now)" "$(basename "$0")" "$1" >&2; return 0; }
-_today() { date '+%Y-%m-%d'; }
-_mktemp() { trk run _mktemp "$@"; }
-_validate_date() { trk run _validate_date "$@";}
-_validate_hours() { trk run _validate_hours "$@";}
-_calculate_grep_pattern() { trk run _calculate_grep_pattern "$@";}
-_start_end_dates_from_grep_pattern() {
-    pattern=$1; [ -z "$pattern" ] && return 2
-    gen_months() {
-        awk '
-        function is_leap(y) {
-            return (y%4==0 && y%100!=0) || (y%400==0)
-        }
-        function mdays(y,m) {
-            if (m==1||m==3||m==5||m==7||m==8||m==10||m==12) return 31
-            if (m==4||m==6||m==9||m==11) return 30
-            return is_leap(y) ? 29 : 28
-        }
-        {
-            y = substr($0,1,4) + 0
-            m = substr($0,6,2) + 0
-            for (d=1; d<=mdays(y,m); d++)
-                printf "%04d-%02d-%02d\n", y, m, d
-        }'
-    }
-    gen_years() {
-        awk '
-        function is_leap(y) {
-            return (y%4==0 && y%100!=0) || (y%400==0)
-        }
-        function mdays(y,m) {
-            if (m==1||m==3||m==5||m==7||m==8||m==10||m==12) return 31
-            if (m==4||m==6||m==9||m==11) return 30
-            return is_leap(y) ? 29 : 28
-        }
-        {
-            y = $0 + 0
-            for (m=1; m<=12; m++)
-                for (d=1; d<=mdays(y,m); d++)
-                    printf "%04d-%02d-%02d\n", y, m, d
-        }'
-    }
-    filter_range() {
-        set -- $(grep "$pattern" | sort)
-        [ $# -eq 0 ] && return 1
-        start=$1
-        for d do end=$d; done
-        printf '%s %s\n' "$start" "$end"
-    }
-    months=$(printf '%s\n' "$pattern" | grep -Eo '[0-9]{4}-[0-9]{2}' | sort -u)
-    if [ -n "$months" ]; then printf '%s\n' "$months" | gen_months | filter_range && return 0; fi
-    years=$(printf '%s\n' "$pattern" | grep -Eo '[0-9]{4}' | sort -u)
-    if [ -n "$years" ]; then printf '%s\n' "$years" | gen_years | filter_range && return 0; fi
-    return 1
-}
-_get_time_entries() {
-    start_date="$1"; end_date="$2"
-    _dbg "_get_time_entries args: [ $* ]"
-    [ -n "$start_date" ] && start_date_param="&from=$start_date"
-    [ -n "$end_date" ] && end_date_param="&to=$end_date"
-    _dbg "_get_time_entries queryparams: [ $start_date_param$end_date_param ]"
-    curl -s --fail "https://api.harvestapp.com/v2/time_entries?user_id=${TRK_HARVEST_USER_ID}${start_date_param}${end_date_param}" \
-      -H "Authorization: Bearer $TRK_HARVEST_ACCESS_TOKEN" \
-      -H "Harvest-Account-Id: $TRK_HARVEST_ACCOUNT_ID" |
-       jq -r '.time_entries.[] | "\(.spent_date) \(.hours) eid:\(.id) tid:\(.task.id) pid:\(.project.id) \(.notes)"'
-}
-_list_time_entries() {
-    [ -t 0 ] || return 0
-    [ -z "$1" ] && _get_time_entries && return 0
-    _dbg "list args input: $*"; pattern="$(_calculate_grep_pattern "$*")"; _dbg "computed input: $pattern"
-    date_range="$(_start_end_dates_from_grep_pattern "$pattern")"
-    _dbg "date range: [ $date_range ]"
-    _get_time_entries "$(echo "$date_range"|cut -d' ' -f1)" "$(echo "$date_range"|cut -d' ' -f2)" | grep "$pattern" | sort
-}
-list_time_entries() {
-    entries="$(_list_time_entries "$@")"; tot=0
-    for e in $(echo "$entries" | cut -d' ' -f2); do [ -z "$e" ] && continue
-        tot=$(echo "$tot + $e" | bc -l); done
-    echo "$entries"; echo
-    echo "tot: $(trk run _get_friendly_time_from_hours $tot)"
-}
-_fetch_project_assignments() {
-    curl -s --fail "https://api.harvestapp.com/v2/users/me/project_assignments" \
-      -H "Authorization: Bearer $TRK_HARVEST_ACCESS_TOKEN" \
-      -H "Harvest-Account-Id: $TRK_HARVEST_ACCOUNT_ID" | jq
-}
-list_and_cache_task_assignments() {
-    force_refresh="$1"
-    project_assignments_cache_file="$tmpdir/trk-harvest-project-assignments-cache.json"
-    assignment_cache_file="$tmpdir/trk-harvest-assignment-cache.txt"
+Hours:
+    Harvest keeps two decimals, trk writes up to four. Hours are therefore
+    rounded to two decimals both when comparing and when posting, so that an
+    entry pushed to harvest matches its trk record on the next run.
 
-	if [ -n "$force_refresh" ]; then
-		_dbg "force refreshing"
-		[ -r "$project_assignments_cache_file" ] && rm -f "$project_assignments_cache_file"
-		[ -r "$assignment_cache_file" ] && rm -f "$assignment_cache_file"
-	fi
+Filtering:
+    Without options a valid GNU date expression becomes a date filter and any
+    other value is treated as a basic grep pattern, exactly as in trk.
+    --date and --grep force the interpretation. The filter is resolved by trk
+    itself, so 'this week', 'last month', '2026-07' and friends behave here
+    the way they behave in 'trk l'.
 
-    [ ! -r "$project_assignments_cache_file" ] && _dbg "fetching assignments" && _fetch_project_assignments > "$project_assignments_cache_file"
-    [ ! -r "$assignment_cache_file" ] && _dbg "processing task assignments" && {
-		printf '' > "$assignment_cache_file"
-		tmpfile_jqfilter="$(trk run _mktemp)"; trap "rm -f $tmpfile_jqfilter" EXIT
-		cat <<'EOF' >"$tmpfile_jqfilter"
-.project_assignments[]
-| {project, client} as $pc
-| .task_assignments[]
-| {
-    task_id: .task.id,
-    task_name: .task.name,
-    project_id: $pc.project.id,
-    project_name: $pc.project.name,
-    project_code: $pc.project.code,
-    client_id: $pc.client.id,
-    client_name: $pc.client.name
-  }
-EOF
-		cat "$project_assignments_cache_file" |
-			jq -c -f "$tmpfile_jqfilter" | while IFS= read -r row; do
-			  field_task_id="$(printf '%s' "$row" | jq -r '.task_id')"
-			  field_task_name="$(printf '%s' "$row" | jq -r '.task_name')"
-			  field_project_id="$(printf '%s' "$row" | jq -r '.project_id')"
-			  field_project_name="$(printf '%s' "$row" | jq -r '.project_name')"
-			  field_project_code="$(printf '%s' "$row" | jq -r '.project_code')"
-			  field_client_id="$(printf '%s' "$row" | jq -r '.client_id')"
-			  field_client_name="$(printf '%s' "$row" | jq -r '.client_name')"
-			  s="$task_assignment_separator"
-			  printf "%s$s%s$s%s$s%s$s%s$s%s$s%s\n" \
-				"cid:$field_client_id" \
-				"pid:$field_project_id" \
-				"tid:$field_task_id" \
-				"$field_client_name" \
-				"$field_project_code" \
-				"$field_project_name" \
-				"$field_task_name" \
-				>> "$assignment_cache_file"
-			done
-		  cat "$assignment_cache_file" |
-			sort -t"$task_assignment_separator" -k4 -k5 -k6 \
-			> "$assignment_cache_file.sorted"
-		  mv "$assignment_cache_file.sorted" "$assignment_cache_file"
-    }
-    cat "$assignment_cache_file"
-}
-print_task_assignments() { p="$@"; [ -z "$p" ] && p="^" ; list_and_cache_task_assignments | sed 's/'$task_assignment_separator'/ | /g' | grep -i "$p"; }
-print_task_assignments_refresh() { p="$@"; [ -z "$p" ] && p="^" ; list_and_cache_task_assignments "refresh" | sed 's/'$task_assignment_separator'/ | /g' | grep -i "$p"; }
-_add_time_entry() {
-    day="$1"
-    hours="$2"
-    taskid="$3"
-    projectid="$4"
-    notes="$5"
-    _dbg "adding entry: [$*]"
-    [ -z "$projectid" ] &&
-        projectid=$(list_and_cache_task_assignments | grep "tid:$taskid" | cut -d"$task_assignment_separator" -f2 | sed 's/pid://' | tr -d ' ') && _dbg "found project id: [$projectid]"
-    curl --fail "https://api.harvestapp.com/v2/time_entries" \
-      -H "Authorization: Bearer $TRK_HARVEST_ACCESS_TOKEN" \
-      -H "Harvest-Account-Id: $TRK_HARVEST_ACCOUNT_ID" \
-      -X POST \
-      -H "Content-Type: application/json" \
-      -d '{"user_id":'"$TRK_HARVEST_USER_ID"',"project_id":'"$projectid"',"task_id":'"$taskid"',"spent_date":"'"$day"'","hours":'"$hours"',"notes":"'"$notes"'"}' >>"$logfile" 2>&1 || return 1
-}
-add_time_entry() {
-    day="$1"
-    hours="$2"
-    taskid="$3"
-    projectid="$4"
-    [ -z "$3" ] && usage && exit 1
-    _dbg "adding entry: [$*]"
-    shift; shift; shift
-    notes="$*"
-    ! _validate_date "$day" &&
-        _err "date [$day] is not a valid date" && exit 1
-    day="$(date -d "$day" '+%Y-%m-%d')"
-    ! _validate_hours "$hours" &&
-        _err "hours spent [$hours] is not a valid number" && exit 1
-    _add_time_entry "$day" "$hours" "$taskid" "$projectid" "$notes" ||
-        _err "error adding entry: [$day $hours $taskid $notes]"
-    _info "entry added: $day $hours $taskid $notes"
-}
-delete_time_entry() {
-    entryid="$1"
-    curl --fail -s -o /dev/null "https://api.harvestapp.com/v2/time_entries/$entryid" \
-      -H "Authorization: Bearer $TRK_HARVEST_ACCESS_TOKEN" \
-      -H "Harvest-Account-Id: $TRK_HARVEST_ACCOUNT_ID" \
-      -X DELETE ||
-        _err "error deleting entry: $entryid"
-    _info "entry deleted:  $entryid"
-}
-_compare_trk_and_harvest_entry() {
-    t="$1"
-    h="$2"
+    A date filter (or no filter at all) selects a period: additions and
+    deletions are both computed over that period.
+    A grep filter selects records, not a period: deletions are skipped, since
+    a harvest entry carries no trk tags and could not be told apart from an
+    entry belonging to another project.
 
-    tday="$(echo "$t" | cut -d' ' -f1)"
-    thours="$(echo "$t" | cut -d' ' -f2)"
-    ttaskid="$(echo "$t" | grep -o "$harvest_trk_tag:[0-9]*" | sed "s/$harvest_trk_tag://" | tr -d ' ')"
-    tprojid="$(echo "$t" | grep -o "$harvest_trk_project_tag:[0-9]*" | sed "s/$harvest_trk_project_tag://" | tr -d ' ')"
-    [ -z "$tprojid" ] && tprojid=$(list_and_cache_task_assignments | grep "tid:$ttaskid" | cut -d"$task_assignment_separator" -f2 | sed 's/pid://' | tr -d ' ')
-    tnotes="$(echo "$t" | cut -d' ' -f3- | sed 's/#.[^ ]*//g' | sed 's/^ *//' | sed 's/ *$//')"
+Sync safety:
+    's' asks for confirmation before deleting, when run on a terminal.
+    Use -y, or TRK_HARVEST_ASSUME_YES, to skip the question in scripts.
+    Running harvest timers are never touched.
 
-    hday="$(echo "$h" | cut -d' ' -f1)"
-    hhours="$(echo "$h" | cut -d' ' -f2 | sed 's/\.0$//')"
-    htaskid="$(echo "$h" | grep -o 'tid:[0-9]*' | sed 's/tid://' | tr -d ' ')"
-    hprojid="$(echo "$h" | grep -o 'pid:[0-9]*' | sed 's/pid://' | tr -d ' ')"
-    hnotes="$(echo "$h" | cut -d' ' -f6- | sed "s/$hprojid//" |  sed 's/^ *//' | sed 's/ *$//')"
-    _dbg "comparing: [$tday] = [$hday] ; [$thours] = [$hhours] ; [$ttaskid] = [$htaskid] ; [$tprojid] = [$hprojid] ; [$tnotes] = [$hnotes] ;"
-    [ "$tday" = "$hday" ] &&
-    [ "$thours" = "$hhours" ] &&
-    [ "$ttaskid" = "$htaskid" ] &&
-    [ "$tprojid" = "$hprojid" ] &&
-    [ "$tnotes" = "$hnotes" ] &&
+Requirements:
+    trk >= $required_trk_version, plus: $dependencies
+
+Environment:
+    TRK_HARVEST_ACCESS_TOKEN  harvest personal access token [${TRK_HARVEST_ACCESS_TOKEN:+set}${TRK_HARVEST_ACCESS_TOKEN:-unset}]
+    TRK_HARVEST_ACCOUNT_ID    harvest account id [current: ${TRK_HARVEST_ACCOUNT_ID:-unset}]
+    TRK_HARVEST_USER_ID       harvest user id [current: ${TRK_HARVEST_USER_ID:-unset}]
+    TRK_HARVEST_ASSUME_YES    never ask for confirmation
+    TRK_HARVEST_CACHE_DIR     cache location [current: $cache_dir]
+    TRK_HARVEST_LOG           api log file [current: $logfile]
+    TRK_DEBUG                 enable diagnostic messages [current: ${TRK_DEBUG:-unset}]
+    TRK_FILE                  record file, read by trk [current: $trkfile]
+    TRK_WORKDAY_HOURS, TRK_UNFRIENDLY
+                              read by trk, honoured here as well"
+}
+
+_err() {
+    printf '%s: error: %s\n' "$scriptname" "$1" >&2
+    exit 1
+}
+
+_warn() {
+    printf '%s: warn: %s\n' "$scriptname" "$1" >&2
+}
+
+_info() {
+    printf '%s: %s\n' "$scriptname" "$1" >&2
+}
+
+_dbg() {
+    [ -n "${TRK_DEBUG:-}" ] &&
+        printf '%s: debug: %s\n' "$scriptname" "$1" >&2
     return 0
+}
+
+_require() {
+    command -v "$1" >/dev/null 2>&1 || _err "missing '$1' command"
+}
+
+_check_dependencies() {
+    for dependency in $dependencies; do
+        _require "$dependency"
+    done
+}
+
+_cleanup() {
+    [ -n "$work_directory" ] && rm -rf "$work_directory"
+    return 0
+}
+
+_setup_work_directory() {
+    work_directory=$(mktemp -d "${TMPDIR:-/tmp}/trk-harvest.XXXXXX") ||
+        _err "cannot create a temporary directory"
+    trap '_cleanup' 0
+    trap '_cleanup; exit 130' HUP INT TERM
+}
+
+_setup_cache_directory() {
+    [ -d "$cache_dir" ] || mkdir -p "$cache_dir" ||
+        _err "cannot create the cache directory: [$cache_dir]"
+}
+
+_confirm() {
+    [ "$assume_yes" -eq 1 ] && return 0
+    [ -n "${TRK_HARVEST_ASSUME_YES:-}" ] && return 0
+    [ -t 0 ] || return 0
+    printf '%s: %s [y/N] ' "$scriptname" "$1" >&2
+    read -r confirm_answer </dev/tty || return 1
+    case $confirm_answer in
+        y|Y|yes|YES) return 0 ;;
+    esac
     return 1
 }
+
+# --- trk bridge ------------------------------------------------------------
+# The new trk auto-detects stdin: every call must get its own /dev/null or it
+# would read the pipe it was started from instead of the trk file.
+
+_trk() {
+    trk "$@" </dev/null
+}
+
+_trk_run() {
+    trk run "$@" </dev/null
+}
+
+_check_trk_version() {
+    trk_version=$(_trk --version 2>/dev/null | awk 'NF { print $NF }')
+    [ -n "$trk_version" ] ||
+        _err "cannot read the trk version; trk >= $required_trk_version is required"
+    awk -v found="$trk_version" -v wanted="$required_trk_version" '
+        BEGIN {
+            found_count = split(found, found_parts, ".")
+            wanted_count = split(wanted, wanted_parts, ".")
+            total = found_count > wanted_count ? found_count : wanted_count
+            for (i = 1; i <= total; i++) {
+                a = found_parts[i] + 0
+                b = wanted_parts[i] + 0
+                if (a > b) exit 0
+                if (a < b) exit 1
+            }
+            exit 0
+        }' ||
+        _err "trk $trk_version is too old; this plugin needs trk >= $required_trk_version"
+    _dbg "trk version: [$trk_version]"
+}
+
+_format_hours() {
+    if [ -n "${TRK_UNFRIENDLY:-}" ]; then
+        awk -v hours="$1" 'BEGIN { printf "%.2f\n", hours }'
+        return 0
+    fi
+    format_seconds=$(awk -v hours="$1" 'BEGIN { printf "%.0f\n", hours * 3600 }')
+    _trk_run _friendly_seconds "$format_seconds" 2>/dev/null ||
+        awk -v hours="$1" 'BEGIN { printf "%.2f\n", hours }'
+}
+
+_normalize_hours() {
+    awk -v hours="$1" 'BEGIN { printf "%.2f\n", hours + 0 }'
+}
+
+_is_number() {
+    printf '%s\n' "$1" | grep -Eq '^[0-9]+$'
+}
+
+# --- filters ---------------------------------------------------------------
+
+_parse_filter() {
+    filter_mode=auto
+    while [ "$#" -gt 0 ]; do
+        case $1 in
+            -y|--yes)
+                assume_yes=1
+                shift
+                ;;
+            --grep)
+                [ "$filter_mode" = auto ] || _err "use only one of --grep and --date"
+                filter_mode="grep"
+                shift
+                ;;
+            --date)
+                [ "$filter_mode" = auto ] || _err "use only one of --grep and --date"
+                filter_mode="date"
+                shift
+                ;;
+            --)
+                shift
+                break
+                ;;
+            *) break ;;
+        esac
+    done
+    filter=$*
+    if [ "$filter_mode" != auto ] && [ -z "$filter" ]; then
+        _err "$filter_mode filter requires a value"
+    fi
+
+    filter_pattern=
+    filter_selects_period=1
+    if [ -n "$filter" ]; then
+        filter_pattern=$(_trk_run _calculate_filter_pattern "$filter" "$filter_mode") ||
+            _err "cannot compute a filter for [$filter]"
+        case $filter_mode in
+            date) filter_selects_period=1 ;;
+            grep) filter_selects_period=0 ;;
+            auto)
+                if _trk_run _validate_date "$filter"; then
+                    filter_selects_period=1
+                else
+                    filter_selects_period=0
+                fi
+                ;;
+        esac
+    fi
+    _dbg "filter: [$filter], mode: [$filter_mode], pattern: [$filter_pattern], period: [$filter_selects_period]"
+}
+
+# Turns a trk filter pattern into the from/to pair accepted by the harvest api.
+# Only the shapes trk itself emits are recognised; anything else means "no
+# range", so the whole history is fetched and matching decides.
+_date_range_from_pattern() {
+    range_pattern=$1
+    [ -n "$range_pattern" ] || return 1
+
+    if printf '%s\n' "$range_pattern" | grep -Eq '^\^[0-9]{4}-$'; then
+        range_year=$(printf '%s' "$range_pattern" | tr -dc '0-9')
+        printf '%s-01-01 %s-12-31\n' "$range_year" "$range_year"
+        return 0
+    fi
+    if printf '%s\n' "$range_pattern" | grep -Eq '^\^[0-9]{4}-[0-9]{2}-$'; then
+        range_month=$(printf '%s' "$range_pattern" | sed 's/^\^//; s/-$//')
+        range_start="$range_month-01"
+        range_end=$(date -d "$range_start + 1 month - 1 day" '+%Y-%m-%d') || return 1
+        printf '%s %s\n' "$range_start" "$range_end"
+        return 0
+    fi
+    if printf '%s\n' "$range_pattern" | grep -Eq '^\^[0-9]{4}-[0-9]{2}-[0-9]{2} $'; then
+        range_day=$(printf '%s' "$range_pattern" | sed 's/^\^//; s/ $//')
+        printf '%s %s\n' "$range_day" "$range_day"
+        return 0
+    fi
+    if printf '%s\n' "$range_pattern" |
+        grep -Eq '^\^\\\([0-9]{4}-[0-9]{2}-[0-9]{2}(\\\|[0-9]{4}-[0-9]{2}-[0-9]{2})*\\\) $'; then
+        range_days=$(printf '%s' "$range_pattern" |
+            grep -Eo '[0-9]{4}-[0-9]{2}-[0-9]{2}' | LC_ALL=C sort)
+        printf '%s %s\n' \
+            "$(printf '%s\n' "$range_days" | head -n 1)" \
+            "$(printf '%s\n' "$range_days" | tail -n 1)"
+        return 0
+    fi
+    return 1
+}
+
+_resolve_date_range() {
+    range_from=
+    range_to=
+    [ -n "$filter_pattern" ] || return 0
+    resolved_range=$(_date_range_from_pattern "$filter_pattern") || {
+        _dbg "no date range derived from the filter"
+        return 0
+    }
+    range_from=${resolved_range%% *}
+    range_to=${resolved_range##* }
+    _dbg "harvest date range: [$range_from] .. [$range_to]"
+}
+
+# --- harvest api -----------------------------------------------------------
+
+_harvest_require_env() {
+    [ -n "${TRK_HARVEST_ACCESS_TOKEN:-}" ] || _err "TRK_HARVEST_ACCESS_TOKEN is not set"
+    [ -n "${TRK_HARVEST_ACCOUNT_ID:-}" ] || _err "TRK_HARVEST_ACCOUNT_ID is not set"
+    [ -n "${TRK_HARVEST_USER_ID:-}" ] || _err "TRK_HARVEST_USER_ID is not set"
+    _is_number "$TRK_HARVEST_ACCOUNT_ID" || _err "TRK_HARVEST_ACCOUNT_ID must be numeric"
+    _is_number "$TRK_HARVEST_USER_ID" || _err "TRK_HARVEST_USER_ID must be numeric"
+
+    # Credentials go into a curl config file instead of the command line, so
+    # that the token never shows up in the process list.
+    harvest_curl_config="$work_directory/curl.conf"
+    {
+        printf 'silent\n'
+        printf 'show-error\n'
+        printf 'fail\n'
+        printf 'header = "Authorization: Bearer %s"\n' "$TRK_HARVEST_ACCESS_TOKEN"
+        printf 'header = "Harvest-Account-Id: %s"\n' "$TRK_HARVEST_ACCOUNT_ID"
+        printf 'header = "User-Agent: trk-harvest/%s"\n' "$version"
+    } >"$harvest_curl_config" || _err "cannot write the curl configuration"
+}
+
+# Follows the pagination links, emitting one json document per page.
+_harvest_get_all() {
+    page_url=$1
+    while [ -n "$page_url" ]; do
+        _dbg "GET $page_url"
+        page_body=$(curl --config "$harvest_curl_config" "$page_url") ||
+            _err "harvest request failed: [$page_url]"
+        printf '%s\n' "$page_body"
+        page_url=$(printf '%s' "$page_body" | jq -r '.links.next // empty') ||
+            _err "unexpected harvest response"
+    done
+}
+
+# Writes: spent_date TAB hours TAB entry_id TAB task_id TAB project_id TAB notes
+_harvest_time_entries_tsv() {
+    entries_output=$1
+    entries_url="$harvest_api/time_entries?user_id=$TRK_HARVEST_USER_ID&per_page=100"
+    [ -n "$range_from" ] && entries_url="$entries_url&from=$range_from"
+    [ -n "$range_to" ] && entries_url="$entries_url&to=$range_to"
+
+    entries_raw="$work_directory/time-entries.json"
+    _harvest_get_all "$entries_url" >"$entries_raw"
+
+    entries_running=$(jq -r '[.time_entries[] | select(.is_running)] | length' "$entries_raw" |
+        awk '{ total += $1 } END { print total + 0 }')
+    [ "$entries_running" -gt 0 ] &&
+        _warn "$entries_running running harvest timer(s) ignored"
+
+    # join("\t") and not @tsv: @tsv escapes backslashes, which would make a
+    # note containing one differ from its trk record on every run.
+    jq -r '
+        .time_entries[]
+        | select(.is_running | not)
+        | [ .spent_date,
+            (.hours | tostring),
+            (.id | tostring),
+            (.task.id | tostring),
+            (.project.id | tostring),
+            ((.notes // "") | gsub("[\\t\\r\\n]"; " "))
+          ] | join("\t")' "$entries_raw" >"$entries_output" ||
+        _err "cannot parse the harvest time entries"
+}
+
+_harvest_add_entry() {
+    add_day=$1
+    add_hours=$2
+    add_task_id=$3
+    add_project_id=$4
+    add_notes=$5
+
+    add_payload="$work_directory/payload.json"
+    jq -n \
+        --argjson user_id "$TRK_HARVEST_USER_ID" \
+        --argjson project_id "$add_project_id" \
+        --argjson task_id "$add_task_id" \
+        --arg spent_date "$add_day" \
+        --argjson hours "$add_hours" \
+        --arg notes "$add_notes" \
+        '{user_id: $user_id, project_id: $project_id, task_id: $task_id,
+          spent_date: $spent_date, hours: $hours, notes: $notes}' \
+        >"$add_payload" 2>/dev/null ||
+        _err "cannot build the request payload for [$add_day $add_hours $add_task_id]"
+
+    _dbg "POST time_entries: $(cat "$add_payload")"
+    printf '\n--- %s POST time_entries\n' "$(date '+%Y-%m-%dT%H:%M:%S')" >>"$logfile"
+    curl --config "$harvest_curl_config" \
+        --request POST \
+        --header 'Content-Type: application/json' \
+        --data-binary "@$add_payload" \
+        "$harvest_api/time_entries" >>"$logfile" 2>&1
+}
+
+_harvest_delete_entry() {
+    _dbg "DELETE time_entries/$1"
+    printf '\n--- %s DELETE time_entries/%s\n' "$(date '+%Y-%m-%dT%H:%M:%S')" "$1" >>"$logfile"
+    curl --config "$harvest_curl_config" \
+        --request DELETE \
+        "$harvest_api/time_entries/$1" >>"$logfile" 2>&1
+}
+
+# --- task assignments ------------------------------------------------------
+
+_fetch_task_assignments() {
+    _setup_cache_directory
+    _harvest_get_all "$harvest_api/users/me/project_assignments?per_page=100" \
+        >"$project_assignments_cache" ||
+        _err "cannot fetch the project assignments"
+
+    jq -r --arg separator "$task_assignment_separator" '
+        .project_assignments[]
+        | . as $assignment
+        | .task_assignments[]
+        | [ ("cid:" + ($assignment.client.id | tostring)),
+            ("pid:" + ($assignment.project.id | tostring)),
+            ("tid:" + (.task.id | tostring)),
+            ($assignment.client.name // ""),
+            ($assignment.project.code // ""),
+            ($assignment.project.name // ""),
+            (.task.name // "")
+          ]
+        | map(gsub("[\\t\\r\\n]"; " ") | gsub($separator; " "))
+        | join($separator)' "$project_assignments_cache" |
+        LC_ALL=C sort -t "$task_assignment_separator" -k4,4 -k5,5 -k6,6 \
+            >"$task_assignments_cache.new" ||
+        _err "cannot parse the project assignments"
+    mv "$task_assignments_cache.new" "$task_assignments_cache" ||
+        _err "cannot update the task assignment cache"
+}
+
+list_task_assignments() {
+    if [ -n "$1" ] || [ ! -s "$task_assignments_cache" ]; then
+        _harvest_require_env
+        _dbg "refreshing the task assignment cache"
+        _fetch_task_assignments
+    fi
+    cat "$task_assignments_cache"
+}
+
+print_task_assignments() {
+    assignments_refresh=$1
+    shift
+    assignments_pattern=$*
+    [ -n "$assignments_pattern" ] || assignments_pattern='^'
+    list_task_assignments "$assignments_refresh" |
+        sed "s/$task_assignment_separator/ | /g" |
+        grep -i -e "$assignments_pattern"
+}
+
+# Writes: task_id TAB project_id
+_task_project_map() {
+    list_task_assignments '' |
+        awk -F"$task_assignment_separator" '
+            {
+                task_id = $3
+                project_id = $2
+                sub(/^tid:/, "", task_id)
+                sub(/^pid:/, "", project_id)
+                if (task_id != "" && project_id != "" && !(task_id in seen)) {
+                    seen[task_id] = 1
+                    print task_id "\t" project_id
+                }
+            }'
+}
+
+# --- normalisation ---------------------------------------------------------
+# Both sides are reduced to the same shape before being compared:
+#   spent_date TAB hours(2dp) TAB task_id TAB project_id TAB notes
+# Tags are dropped, whitespace is squeezed, hours are rounded to harvest's own
+# precision. Comparing canonical lines removes the per-pair field extraction
+# the previous version did with a dozen sub-shells.
+
+_normalization_awk='
+    function is_tag(word) {
+        return word ~ /^#[[:alnum:]_][[:alnum:]_-]*(:[[:alnum:]_][[:alnum:]_-]*)?$/
+    }
+    function clean_notes(text,   parts, count, index_, result) {
+        count = split(text, parts, /[ \t]+/)
+        result = ""
+        for (index_ = 1; index_ <= count; index_++) {
+            if (parts[index_] == "" || is_tag(parts[index_])) continue
+            result = (result == "" ? parts[index_] : result " " parts[index_])
+        }
+        return result
+    }'
+
+_trk_entries_tsv() {
+    trk_entries_output=$1
+    trk_entries_filter=$2
+
+    # An unreadable trk file must never look like "trk has no records", or a
+    # sync would offer to wipe every harvest entry in the period.
+    [ -r "$trkfile" ] || _err "cannot read the trk file: [$trkfile]"
+
+    if [ -n "$trk_entries_filter" ]; then
+        trk_entries_source=$(_trk l --grep "$trk_entries_filter")
+    else
+        trk_entries_source=$(_trk l)
+    fi
+
+    printf '%s\n' "$trk_entries_source" |
+        grep -e "$harvest_trk_task_tag:" |
+        awk -v map_file="$(_task_project_map_file)" \
+            -v task_tag="$harvest_trk_task_tag:" \
+            -v project_tag="$harvest_trk_project_tag:" \
+            -v program="$scriptname" \
+            "$_normalization_awk"'
+            BEGIN {
+                while ((getline map_line < map_file) > 0) {
+                    split(map_line, map_parts, "\t")
+                    project_of_task[map_parts[1]] = map_parts[2]
+                }
+                close(map_file)
+            }
+            {
+                day = $1
+                hours = $2
+                task_id = ""
+                project_id = ""
+                notes = ""
+                for (field = 3; field <= NF; field++) {
+                    if (index($field, task_tag) == 1) {
+                        task_id = substr($field, length(task_tag) + 1)
+                        continue
+                    }
+                    if (index($field, project_tag) == 1) {
+                        project_id = substr($field, length(project_tag) + 1)
+                        continue
+                    }
+                    if (is_tag($field)) continue
+                    notes = (notes == "" ? $field : notes " " $field)
+                }
+                if (task_id !~ /^[0-9]+$/) {
+                    printf "%s: warn: skipped, invalid task id: %s\n", program, $0 > "/dev/stderr"
+                    next
+                }
+                if (project_id == "") project_id = project_of_task[task_id]
+                if (project_id !~ /^[0-9]+$/) {
+                    printf "%s: warn: skipped, no project for task %s: %s\n", program, task_id, $0 > "/dev/stderr"
+                    next
+                }
+                printf "%s\t%.2f\t%s\t%s\t%s\n", day, hours, task_id, project_id, notes
+            }' >"$trk_entries_output"
+}
+
+_task_project_map_file() {
+    if [ ! -s "$work_directory/task-project.map" ]; then
+        _task_project_map >"$work_directory/task-project.map"
+    fi
+    printf '%s\n' "$work_directory/task-project.map"
+}
+
+_harvest_entries_key_tsv() {
+    key_input=$1
+    key_output=$2
+    awk -F'\t' -v OFS='\t' "$_normalization_awk"'
+        {
+            printf "%s\t%.2f\t%s\t%s\t%s\t%s\n", $1, $2, $4, $5, clean_notes($6), $3
+        }' "$key_input" >"$key_output"
+}
+
+# --- plan ------------------------------------------------------------------
+# Plan file, tab separated: op day hours task_id project_id entry_id notes
+# entry_id is '-' when absent. Notes come last so that an empty value cannot be
+# swallowed by the shell's IFS handling on read.
+
+_build_plan() {
+    plan_output=$1
+
+    _dbg "reading trk records"
+    trk_selected="$work_directory/trk-selected.tsv"
+    trk_scope="$work_directory/trk-scope.tsv"
+    _trk_entries_tsv "$trk_selected" "$filter_pattern"
+    if [ "$filter_selects_period" -eq 1 ]; then
+        cp "$trk_selected" "$trk_scope"
+    else
+        # A grep filter picks records, not a period: deciding what to delete
+        # would need the records it does not select, so deletions are skipped.
+        : >"$trk_scope"
+    fi
+
+    _dbg "reading harvest entries"
+    harvest_raw="$work_directory/harvest-raw.tsv"
+    harvest_keyed="$work_directory/harvest-keyed.tsv"
+    _harvest_time_entries_tsv "$harvest_raw"
+    _harvest_entries_key_tsv "$harvest_raw" "$harvest_keyed"
+
+    _dbg "matching $(wc -l <"$trk_selected") trk record(s) against $(wc -l <"$harvest_keyed") harvest entry/entries"
+
+    # Two independent multiset comparisons: identical records are matched one
+    # to one instead of collapsing, so repeated entries sync correctly.
+    # The reference side is loaded in BEGIN rather than with the usual
+    # FNR == NR idiom, which misreads the first record when a side is empty.
+    {
+        awk -F'\t' -v OFS='\t' -v reference="$harvest_keyed" '
+            BEGIN {
+                while ((getline reference_line < reference) > 0) {
+                    split(reference_line, parts, FS)
+                    available[parts[1] FS parts[2] FS parts[3] FS parts[4] FS parts[5]]++
+                }
+                close(reference)
+            }
+            {
+                if (used[$0] < available[$0]) {
+                    used[$0]++
+                    print "=", $1, $2, $3, $4, "-", $5
+                } else {
+                    print "+", $1, $2, $3, $4, "-", $5
+                }
+            }' "$trk_selected"
+
+        if [ "$filter_selects_period" -eq 1 ]; then
+            awk -F'\t' -v OFS='\t' -v reference="$trk_scope" '
+                BEGIN {
+                    while ((getline reference_line < reference) > 0)
+                        available[reference_line]++
+                    close(reference)
+                }
+                {
+                    key = $1 FS $2 FS $3 FS $4 FS $5
+                    if (used[key] < available[key]) {
+                        used[key]++
+                        next
+                    }
+                    print "-", $1, $2, $3, $4, $6, $5
+                }' "$harvest_keyed"
+        fi
+    } | LC_ALL=C sort -t "$tab" -k2,2 -k1,1 -k3,3 >"$plan_output"
+
+    if [ "$filter_selects_period" -eq 1 ]; then
+        [ -s "$trk_scope" ] || [ ! -s "$harvest_keyed" ] ||
+            _warn "no trk record matches this filter: every harvest entry in the period is up for deletion"
+    else
+        _warn "grep filter: only additions are computed, deletions are skipped"
+    fi
+}
+
+_print_plan() {
+    awk -F'\t' '
+        {
+            symbol = $1
+            if (symbol == "=") symbol = "\342\234\223"
+            line = symbol " " $2 " " $3 " tid:" $4 " pid:" $5
+            if ($6 != "-") line = line " eid:" $6
+            if ($7 != "") line = line " " $7
+            print line
+        }' "$1"
+}
+
 plan() {
-    _dbg "getting trk entries"
-    trk_entries="$(trk l "$@" | grep "$harvest_trk_tag:" )"
-    _dbg "getting harvest entries"
-    harvest_entries="$(_list_time_entries "$@")"
+    _parse_filter "$@"
+    _harvest_require_env
+    _resolve_date_range
 
-    _dbg "checking for duplicated trk entries"
-    duplicates="$(echo "$trk_entries" | uniq -d)"
-    [ -n "$duplicates" ] &&
-        _warn "there are some duplicated trk entries, the sync will not work as expected: $duplicates"
+    plan_file="$work_directory/plan.tsv"
+    _build_plan "$plan_file"
 
-    _dbg "building plan"
-    plan_file="$(_mktemp)"; trap "rm -f $plan_file" EXIT
-    while read t; do
-        found=""
-        _dbg "searching match for trk entry [$t]"
-        while read h; do
-            [ -z "$(printf "$h" | tr -d ' ')" ] && continue
-            _compare_trk_and_harvest_entry "$t" "$h" &&
-            _dbg "match found [$h]" &&
-            found='y' && break
-        done <<EOFH
-$harvest_entries
-EOFH
-        [ -z "$found" ] && echo "+ $t" >>"$plan_file"
-        [ -n "$found" ] && echo "✓ $t" >>"$plan_file"
-    done <<EOFT &
-$trk_entries
-EOFT
-    while read h; do
-        [ -z "$(printf "$h" | tr -d ' ')" ] && continue
-        found=""
-        _dbg "searching match for hrv entry [$h]"
-        while read t; do
-            _compare_trk_and_harvest_entry "$t" "$h" &&
-            _dbg "match found [$t]" &&
-            found='y' && break
-        done <<EOFT
-$trk_entries
-EOFT
-        [ -z "$found" ] && echo "- $h" >>"$plan_file"
-    done <<EOFH &
-$harvest_entries
-EOFH
-    wait
     _info "plan:"
-    cat "$plan_file" | grep '^✓' | sort -k2; echo
-    cat "$plan_file" | grep -v '^✓' | sort -k2
+    _print_plan "$plan_file" | grep -e '^✓' || :
+    printf '\n'
+    _print_plan "$plan_file" | grep -v -e '^✓' || :
 }
+
 sync() {
-    plan="$(plan "$@" | grep -v '^✓ ')"
-    [ -z "$plan" ] && _info "nothing to sync" && return 0
-    echo "$plan" ; echo
+    _parse_filter "$@"
+    _harvest_require_env
+    _resolve_date_range
+    _setup_cache_directory
+
+    plan_file="$work_directory/plan.tsv"
+    _build_plan "$plan_file"
+
+    pending_file="$work_directory/pending.tsv"
+    grep -v -e "^=$tab" "$plan_file" >"$pending_file" || :
+    if [ ! -s "$pending_file" ]; then
+        _info "nothing to sync"
+        return 0
+    fi
+
+    _print_plan "$pending_file"
+    printf '\n'
+
+    deletion_count=$(grep -c -e "^-$tab" "$pending_file" || :)
+    if [ "$deletion_count" -gt 0 ]; then
+        _confirm "$deletion_count harvest entry/entries will be deleted, continue?" ||
+            _err "aborted"
+    fi
+
     _info "syncing harvest..."
-    while read p; do
-        if echo "$p" | grep '^+' >/dev/null; then
-            t="$(echo "$p" | sed 's/^+ //')"
-            day="$(echo "$t" | cut -d' ' -f1)"
-            hours="$(echo "$t" | cut -d' ' -f2)"
-            taskid="$(echo "$t" | grep -o "$harvest_trk_tag:[0-9]*" | sed "s/$harvest_trk_tag://" | tr -d ' ')"
-            projectid="$(echo "$t" | grep -o "$harvest_trk_project_tag:[0-9]*" | sed "s/$harvest_trk_project_tag://" | tr -d ' ')"
-            notes="$(echo "$t" | cut -d' ' -f3- | sed 's/#.[^ ]*//g' | sed 's/^ *//' | sed 's/ *$//')"
-            add_time_entry "$day" "$hours" "$taskid" "$projectid" "$notes"
-        fi
-        if echo "$p" | grep '^-' >/dev/null; then
-            entryid="$(echo "$p" | grep -o 'eid:[0-9]*' | sed 's/eid://' | tr -d ' ')"
-            delete_time_entry "$entryid"
-        fi
-    done <<EOF &
-$plan
-EOF
-    wait
-    _info "sync complete"
+    sync_added=0
+    sync_deleted=0
+    sync_failed=0
+    while IFS="$tab" read -r sync_op sync_day sync_hours sync_task sync_project sync_entry sync_notes; do
+        case $sync_op in
+            +)
+                if _harvest_add_entry "$sync_day" "$sync_hours" "$sync_task" \
+                    "$sync_project" "$sync_notes"; then
+                    sync_added=$((sync_added + 1))
+                    _info "added: $sync_day $sync_hours tid:$sync_task pid:$sync_project $sync_notes"
+                else
+                    sync_failed=$((sync_failed + 1))
+                    _warn "cannot add: $sync_day $sync_hours tid:$sync_task pid:$sync_project $sync_notes"
+                fi
+                ;;
+            -)
+                if _harvest_delete_entry "$sync_entry"; then
+                    sync_deleted=$((sync_deleted + 1))
+                    _info "deleted: eid:$sync_entry $sync_day $sync_hours $sync_notes"
+                else
+                    sync_failed=$((sync_failed + 1))
+                    _warn "cannot delete eid:$sync_entry (locked or approved?)"
+                fi
+                ;;
+        esac
+    done <"$pending_file"
+
+    _info "sync complete: $sync_added added, $sync_deleted deleted, $sync_failed failed"
+    [ "$sync_failed" -eq 0 ] || {
+        _warn "see the api log: $logfile"
+        return 1
+    }
 }
-_check_dependencies() {
-    missing=''; for d in $dependencies; do _dbg "checking dep [$d]"; command -v "$d">/dev/null; [ $? -ne 0 ] && missing="$missing $d"; done
-    [ -n "$missing" ] && echo "missing dependencies: $missing" >&2 && exit 1
+
+# --- commands --------------------------------------------------------------
+
+list_time_entries() {
+    _parse_filter "$@"
+    _harvest_require_env
+    _resolve_date_range
+
+    entries_file="$work_directory/harvest-entries.tsv"
+    _harvest_time_entries_tsv "$entries_file"
+
+    awk -F'\t' '
+        { printf "%s %s eid:%s tid:%s pid:%s %s\n", $1, $2, $3, $4, $5, $6 }
+    ' "$entries_file" | LC_ALL=C sort
+
+    entries_total=$(awk -F'\t' '{ total += $2 } END { printf "%.4f\n", total + 0 }' "$entries_file")
+    printf '\n'
+    printf 'tot: %s\n' "$(_format_hours "$entries_total")"
 }
+
+add_time_entry() {
+    [ "$#" -ge 4 ] || {
+        usage >&2
+        exit 1
+    }
+    _harvest_require_env
+
+    entry_day=$1
+    entry_hours=$2
+    entry_task_id=$3
+    shift 3
+    entry_project_id=
+    if _is_number "$1" && [ "$#" -gt 1 ]; then
+        entry_project_id=$1
+        shift
+    fi
+    entry_notes=$*
+
+    _trk_run _validate_date "$entry_day" || _err "date [$entry_day] is not valid"
+    entry_day=$(date -d "$entry_day" '+%Y-%m-%d') ||
+        _err "cannot normalize date [$entry_day]"
+    _trk_run _validate_hours "$entry_hours" ||
+        _err "hours [$entry_hours] is not a valid number"
+    entry_hours=$(_normalize_hours "$entry_hours")
+    _is_number "$entry_task_id" || _err "task id [$entry_task_id] is not valid"
+
+    if [ -z "$entry_project_id" ]; then
+        entry_project_id=$(_task_project_map |
+            awk -F'\t' -v task_id="$entry_task_id" '$1 == task_id { print $2; exit }')
+        _dbg "resolved project id: [$entry_project_id]"
+    fi
+    _is_number "$entry_project_id" ||
+        _err "no project id for task [$entry_task_id]; pass it or refresh with '$scriptname tt'"
+
+    _setup_cache_directory
+    _harvest_add_entry "$entry_day" "$entry_hours" "$entry_task_id" \
+        "$entry_project_id" "$entry_notes" ||
+        _err "cannot add entry: [$entry_day $entry_hours $entry_task_id $entry_project_id $entry_notes]"
+    _info "entry added: $entry_day $entry_hours tid:$entry_task_id pid:$entry_project_id $entry_notes"
+}
+
+delete_time_entry() {
+    [ "$#" -ge 1 ] || _err "an entry id is required"
+    _is_number "$1" || _err "entry id [$1] is not valid"
+    _harvest_require_env
+    _setup_cache_directory
+    _harvest_delete_entry "$1" || _err "cannot delete entry: [$1]"
+    _info "entry deleted: $1"
+}
+
 main() {
+    [ "$#" -gt 0 ] || {
+        usage
+        exit 0
+    }
     _check_dependencies
-    cmd="$1"; shift
-    case $cmd in
-        t) print_task_assignments "$@";;
-        tt) print_task_assignments_refresh "$@";;
-        l) list_time_entries "$@";;
-        a) add_time_entry "$@";;
-        d) delete_time_entry "$@";;
-        p) plan "$@";;
-        s) sync "$@";;
-        h) helpmsg && exit 0;;
-        run) "$@";;
+    _check_trk_version
+    _setup_work_directory
+
+    command_name=$1
+    shift
+
+    case $command_name in
+        l|list) list_time_entries "$@" ;;
+        t|tasks) print_task_assignments '' "$@" ;;
+        tt) print_task_assignments refresh "$@" ;;
+        a|add) add_time_entry "$@" ;;
+        d|delete) delete_time_entry "$@" ;;
+        p|plan) plan "$@" ;;
+        s|sync) sync "$@" ;;
+        h|help|-h|--help) helpmsg ;;
+        -v|--version) printf '%s %s\n' "$scriptname" "$version" ;;
+        run)
+            [ "$#" -gt 0 ] || _err "run requires a command"
+            "$@"
+            ;;
+        *)
+            usage >&2
+            _err "unknown command: [$command_name]"
+            ;;
     esac
 }
-scriptname=$(basename $0)
-[ "$1" ] || { usage; exit 0; } && main "$@"
+
+main "$@"
