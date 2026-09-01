@@ -1,6 +1,6 @@
 #!/bin/sh
 
-version="0.2.0"
+version="0.3.0"
 required_trk_version="0.7.0"
 dependencies="curl jq trk"
 
@@ -49,8 +49,10 @@ usage() {
 
     $scriptname j [pattern]       lists cached projects
     $scriptname jj [pattern]      refreshes and lists projects
-    $scriptname t [pattern]       lists cached tasks
-    $scriptname tt [pattern]      refreshes and lists tasks
+    $scriptname t [-p project_id] [pattern]
+        lists cached global tasks, or tasks assigned to one project
+    $scriptname tt [-p project_id] [pattern]
+        refreshes and lists global or project-assigned tasks
     $scriptname refresh           refreshes both inventories
 
     $scriptname a [-b] [-p project_id] <date> <hours> <task_id> [project_id] [notes]
@@ -95,7 +97,17 @@ helpmsg() {
 
 Inventories:
     '$scriptname j' and '$scriptname t' print ready-to-copy tags. Their caches
-    are scoped by Keito company id. Use jj/tt or refresh after Keito changes.
+    are scoped by Keito company id. '$scriptname t -p <project_id>' prints
+    ready-to-copy +kpid/+kid pairs for tasks assigned to that project. Use
+    jj/tt after Keito changes; refresh also updates project task sets already
+    present in the cache.
+
+Project-task validation:
+    Tasks are defined workspace-wide but assigned individually to projects.
+    plan, sync and doctor query the live project-task assignments before adding
+    an entry and reject a +kpid/+kid pair that Keito does not currently allow.
+    Existing historical matches and deletions are not rejected if their task or
+    project was later archived. This check deliberately bypasses the cache.
 
 Mirroring and ownership:
     trk is the source of truth. The comparison uses date, rounded hours, task,
@@ -455,8 +467,31 @@ _refresh_tasks() {
     jq -e '.tasks | arrays' "$tasks_new" >/dev/null || _err "unexpected tasks response"
     mv "$tasks_new" "$tasks_cache" || _err "cannot update task cache"
 }
+_project_tasks_cache_path() {
+    _is_id "$1" || _err "invalid project id: [$1]"
+    printf '%s/project-tasks/%s.jsonl\n' "$account_cache_dir" "$1"
+}
+_refresh_project_tasks() {
+    project_tasks_id=$1
+    project_tasks_cache=$(_project_tasks_cache_path "$project_tasks_id")
+    project_tasks_directory=${project_tasks_cache%/*}
+    mkdir -p "$project_tasks_directory" ||
+        _err "cannot create project-task cache: [$project_tasks_directory]"
+    project_tasks_new="$work_directory/project-tasks-$project_tasks_id.jsonl"
+    _keito_get_all "$keito_api/tasks?project_id=$project_tasks_id&is_active=true&per_page=100" \
+        >"$project_tasks_new"
+    jq -e '.tasks | arrays' "$project_tasks_new" >/dev/null ||
+        _err "unexpected project tasks response for [$project_tasks_id]"
+    mv "$project_tasks_new" "$project_tasks_cache" ||
+        _err "cannot update task cache for project [$project_tasks_id]"
+}
 _ensure_projects() { [ -s "$projects_cache" ] || _refresh_projects; }
 _ensure_tasks() { [ -s "$tasks_cache" ] || _refresh_tasks; }
+_ensure_project_tasks() {
+    ensured_project_id=$1
+    ensured_project_cache=$(_project_tasks_cache_path "$ensured_project_id")
+    [ -s "$ensured_project_cache" ] || _refresh_project_tasks "$ensured_project_id"
+}
 
 print_projects() {
     refresh_projects=$1; shift; projects_pattern=$*
@@ -471,21 +506,65 @@ print_projects() {
 }
 
 print_tasks() {
-    refresh_tasks=$1; shift; tasks_pattern=$*
-    _keito_setup; [ -z "$refresh_tasks" ] || _refresh_tasks; _ensure_tasks
+    refresh_tasks=$1; shift; tasks_project_id=
+    while [ "$#" -gt 0 ]; do
+        case $1 in
+            -p|--project)
+                [ "$#" -ge 2 ] || _err "--project requires an id"
+                [ -z "$tasks_project_id" ] || _err "--project may be specified only once"
+                tasks_project_id=$2; shift 2 ;;
+            --) shift; break ;;
+            *) break ;;
+        esac
+    done
+    tasks_pattern=$*
+    _keito_setup
+    if [ -n "$tasks_project_id" ]; then
+        _is_id "$tasks_project_id" || _err "invalid project id: [$tasks_project_id]"
+        [ -z "$refresh_tasks" ] || _refresh_project_tasks "$tasks_project_id"
+        _ensure_project_tasks "$tasks_project_id"
+        tasks_source=$(_project_tasks_cache_path "$tasks_project_id")
+    else
+        [ -z "$refresh_tasks" ] || _refresh_tasks
+        _ensure_tasks
+        tasks_source=$tasks_cache
+    fi
     tasks_display="$work_directory/tasks.txt"
-    jq -r --arg tag "$trk_task_tag:" '
-        .tasks[] | [ ($tag + (.id | tostring)), (.name // "" | tostring) ] | join(" | ")' \
-        "$tasks_cache" | LC_ALL=C sort >"$tasks_display" || _err "cannot parse task cache"
+    if [ -n "$tasks_project_id" ]; then
+        jq -r --arg project_tag "$trk_project_tag:$tasks_project_id" --arg task_tag "$trk_task_tag:" '
+            .tasks[] | [ ($project_tag + " " + $task_tag + (.id | tostring)),
+            (.name // "" | tostring),
+            (if has("budget") then "budget:" + ((.budget // "none") | tostring) else empty end) ]
+            | join(" | ")' "$tasks_source" | LC_ALL=C sort >"$tasks_display" ||
+            _err "cannot parse task cache for project [$tasks_project_id]"
+    else
+        jq -r --arg tag "$trk_task_tag:" '
+            .tasks[] | [ ($tag + (.id | tostring)), (.name // "" | tostring) ] | join(" | ")' \
+            "$tasks_source" | LC_ALL=C sort >"$tasks_display" || _err "cannot parse task cache"
+    fi
     if [ -n "$tasks_pattern" ]; then grep -i -e "$tasks_pattern" "$tasks_display"; else cat "$tasks_display"; fi
 }
 
 refresh_inventories() {
     [ "$#" -eq 0 ] || _err "refresh takes no arguments"
     _keito_setup; _refresh_projects; _refresh_tasks
+    refreshed_project_task_sets=0
+    project_tasks_cache_directory="$account_cache_dir/project-tasks"
+    if [ -d "$project_tasks_cache_directory" ]; then
+        set +f
+        for cached_project_tasks in "$project_tasks_cache_directory"/*.jsonl; do
+            [ -f "$cached_project_tasks" ] || continue
+            cached_project_id=${cached_project_tasks##*/}
+            cached_project_id=${cached_project_id%.jsonl}
+            _is_id "$cached_project_id" || continue
+            _refresh_project_tasks "$cached_project_id"
+            refreshed_project_task_sets=$((refreshed_project_task_sets + 1))
+        done
+        set -f
+    fi
     project_count=$(jq -r '[.projects[]] | length' "$projects_cache" | awk '{ n += $1 } END { print n + 0 }')
     task_count=$(jq -r '[.tasks[]] | length' "$tasks_cache" | awk '{ n += $1 } END { print n + 0 }')
-    _info "inventories refreshed: $project_count project(s), $task_count task(s)"
+    _info "inventories refreshed: $project_count project(s), $task_count global task(s), $refreshed_project_task_sets cached project task set(s)"
 }
 
 # --- normalisation ---------------------------------------------------------
@@ -540,6 +619,42 @@ _trk_entries_machine() {
         _err "one or more trk records have an invalid Keito mapping"
 }
 
+# Validate each distinct project/task pair against Keito's live assignments.
+# Input fields: day hours task project notes billable
+_validate_project_task_pairs() {
+    validation_input=$1
+    validation_pairs="$work_directory/project-task-pairs.data"
+    validation_projects="$work_directory/project-task-projects.txt"
+    awk -F"$separator" -v OFS="$separator" '{ print $4,$3 }' "$validation_input" |
+        LC_ALL=C sort -u >"$validation_pairs"
+    validated_pair_count=$(wc -l <"$validation_pairs" | tr -d ' ')
+    [ -s "$validation_pairs" ] || return 0
+    awk -F"$separator" '!seen[$1]++ { print $1 }' "$validation_pairs" >"$validation_projects"
+
+    validation_failed=0
+    while IFS= read -r validation_project; do
+        _refresh_project_tasks "$validation_project"
+        validation_cache=$(_project_tasks_cache_path "$validation_project")
+        validation_task_ids="$work_directory/project-task-ids-$validation_project.txt"
+        validation_project_pairs="$work_directory/project-task-pairs-$validation_project.data"
+        jq -r '.tasks[] | .id | tostring' "$validation_cache" |
+            LC_ALL=C sort -u >"$validation_task_ids" ||
+            _err "cannot parse task assignments for project [$validation_project]"
+        awk -F"$separator" -v project="$validation_project" '$1 == project' \
+            "$validation_pairs" >"$validation_project_pairs"
+        while IFS="$separator" read -r validation_pair_project validation_task; do
+            if ! grep -Fqx -e "$validation_task" "$validation_task_ids"; then
+                printf '%s: error: task [%s] is not actively assigned to project [%s]\n' \
+                    "$scriptname" "$validation_task" "$validation_pair_project" >&2
+                validation_failed=$((validation_failed + 1))
+            fi
+        done <"$validation_project_pairs"
+    done <"$validation_projects"
+    [ "$validation_failed" -eq 0 ] ||
+        _err "$validation_failed invalid project-task association(s); operation aborted"
+    _dbg "validated $validated_pair_count project-task association(s)"
+}
+
 # Input: day hours entry task project source owned notes
 # Output: day hours task project notes entry source owned
 _keito_entries_key_machine() {
@@ -592,6 +707,10 @@ _build_plan() {
                 }' "$keito_keyed"
         fi
     } | LC_ALL=C sort -t "$separator" -k2,2 -k1,1 -k3,3 >"$plan_output"
+    validation_additions="$work_directory/validation-additions.data"
+    awk -F"$separator" -v OFS="$separator" '$1 == "+" { print $2,$3,$4,$5,$7,$8 }' \
+        "$plan_output" >"$validation_additions"
+    _validate_project_task_pairs "$validation_additions"
     if [ -s "$unmanaged_file" ]; then
         while read -r unmanaged_source unmanaged_count; do
             _info "left alone: $unmanaged_count unmatched entry/entries from '$unmanaged_source'"
@@ -714,6 +833,11 @@ add_time_entry() {
     _is_id "$entry_task_id" || _err "invalid task id: [$entry_task_id]"
     _is_id "$entry_project_id" || _err "invalid project id: [$entry_project_id]"
     _keito_setup
+    entry_validation="$work_directory/direct-add-validation.data"
+    printf '%s%s%s%s%s%s%s%s%s%s%s\n' "$entry_day" "$separator" "$entry_hours" \
+        "$separator" "$entry_task_id" "$separator" "$entry_project_id" "$separator" \
+        "" "$separator" "$entry_billable" >"$entry_validation"
+    _validate_project_task_pairs "$entry_validation"
     _keito_add_entry "$entry_day" "$entry_hours" "$entry_task_id" "$entry_project_id" "$entry_notes" "$entry_billable" ||
         _err "cannot add entry ($keito_status): $keito_last_error"
     _info "entry added: $entry_day $entry_hours tid:$entry_task_id pid:$entry_project_id $entry_notes"
@@ -729,12 +853,16 @@ delete_time_entry() {
 
 doctor() {
     [ "$#" -eq 0 ] || _err "doctor takes no arguments"
-    _check_trkfile; _keito_setup; _keito_resolve_user; _refresh_projects; _refresh_tasks
+    _keito_setup
+    doctor_plan="$work_directory/doctor-plan.data"
+    _build_plan "$doctor_plan"
+    _refresh_projects; _refresh_tasks
     project_count=$(jq -r '[.projects[]] | length' "$projects_cache" | awk '{ n+=$1 } END { print n+0 }')
     task_count=$(jq -r '[.tasks[]] | length' "$tasks_cache" | awk '{ n+=$1 } END { print n+0 }')
     _info "trk $trk_version: valid"
     _info "Keito authentication: user $keito_user_id, company $keito_account_id"
     _info "discovery: $project_count active project(s), $task_count active task(s)"
+    _info "mapping: $validated_pair_count pending project-task association(s) valid"
     _info "doctor: ok"
 }
 
