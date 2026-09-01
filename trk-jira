@@ -1,20 +1,17 @@
 #!/bin/sh
 
-version="0.1.0"
+version="0.2.0"
 required_trk_version="0.7.0"
 dependencies="base64 cksum curl jq trk"
 
 jira_base_url="${TRK_JIRA_BASE_URL:-}"
 jira_base_url=${jira_base_url%/}
-tempo_origin="${TRK_JIRA_TEMPO_URL:-https://api.tempo.io}"
-tempo_origin=${tempo_origin%/}
-tempo_api="$tempo_origin/4"
 
 trk_issue_tag="+jid"
-trk_billable_tag="+billable"
 worklog_marker="[trk-jira]"
 start_time="${TRK_JIRA_START_TIME:-09:00:00}"
 jira_jql="${TRK_JIRA_JQL:-assignee = currentUser() AND resolution = Unresolved ORDER BY updated DESC}"
+worklog_jql="${TRK_JIRA_WORKLOG_JQL:-worklogAuthor = currentUser()}"
 
 trkfile="${TRK_FILE:-$HOME/.trkfile}"
 cache_root="${TRK_JIRA_CACHE_DIR:-${XDG_CACHE_HOME:-$HOME/.cache}/trk-jira}"
@@ -44,24 +41,24 @@ jira_account_id=
 usage() {
     printf '%s\n' "Usage [v$version]:
     $scriptname l [--grep|--date] [filter]
-        lists Tempo worklogs for the selected period
+        lists Jira worklogs for the selected period
 
     $scriptname j [pattern]       lists cached Jira issues
     $scriptname jj [pattern]      refreshes and lists Jira issues
     $scriptname refresh           refreshes the Jira issue inventory
 
-    $scriptname a [-b] <date> <hours> <issue_key_or_id> [notes]
-        adds one managed Tempo worklog
-    $scriptname d <tempo_worklog_id>
-        deletes one Tempo worklog by id
+    $scriptname a <date> <hours> <issue_key_or_id> [notes]
+        adds one managed Jira worklog
+    $scriptname d <jira_worklog_id>
+        deletes one Jira worklog by id
 
     $scriptname p [--grep|--date] [filter]
-        shows the plan needed to mirror selected trk records to Tempo
+        shows the plan needed to mirror selected trk records to Jira
     $scriptname s [-y] [--grep|--date] [filter]
         applies the plan; deletions require confirmation or -y
 
     $scriptname doctor
-        validates trk, Jira authentication, issue discovery and Tempo access
+        validates trk, Jira authentication, issue and worklog discovery
     $scriptname h
         shows extended help
 
@@ -77,18 +74,17 @@ helpmsg() {
 
         $trk_issue_tag:<issue-key-or-id>
 
-    Issue keys are resolved through Jira and Tempo receives the numeric issue
-    id. Every other +tag is stripped from the worklog description.
+    Issue keys are resolved through Jira. Every other +tag is stripped from
+    the worklog description.
 
-    2026-09-01 1.5 $trk_billable_tag $trk_issue_tag:OPS-123 fix importer
-        -> OPS-123, 5400 seconds, billable, 'fix importer'
+    2026-09-01 1.5 $trk_issue_tag:OPS-123 fix importer
+        -> OPS-123, 5400 seconds, 'fix importer'
 
 Ownership:
-    Tempo worklogs do not expose arbitrary integration metadata. trk-jira
-    therefore reserves the exact description prefix '$worklog_marker'. New
+    trk-jira reserves the exact worklog-description prefix '$worklog_marker'. New
     worklogs are stored as '$worklog_marker <notes>'; the prefix is hidden when
     listing and comparing entries. sync deletes only worklogs carrying it.
-    Do not add this prefix manually to unrelated Tempo worklogs.
+    Do not add this prefix manually to unrelated Jira worklogs.
 
 Mirroring:
     trk is the source of truth. Date, seconds, Jira issue id and normalised
@@ -109,13 +105,9 @@ Issue inventory:
 
     Override TRK_JIRA_JQL when your workplace uses a different issue scope.
 
-Billable time:
-    $trk_billable_tag sets billableSeconds equal to timeSpentSeconds. Without
-    it, billableSeconds is omitted and Tempo applies its configured default.
-    Billable state is excluded from comparison because Tempo may derive it.
-
 Target:
-    Jira Cloud REST API v3 and Tempo REST API v4.
+    Jira Cloud REST API v3. Tempo synchronises Jira worklogs automatically.
+    Tempo-specific work attributes and billableSeconds are not managed.
 
 Requirements:
     trk >= $required_trk_version, plus: $dependencies
@@ -124,10 +116,9 @@ Environment:
     TRK_JIRA_BASE_URL        Jira Cloud URL [current: ${jira_base_url:-unset}]
     TRK_JIRA_EMAIL           Jira account email [current: ${TRK_JIRA_EMAIL:-unset}]
     TRK_JIRA_API_TOKEN       Jira API token [current: $(_secret_state "${TRK_JIRA_API_TOKEN:-}")]
-    TRK_JIRA_TEMPO_TOKEN     Tempo API token [current: $(_secret_state "${TRK_JIRA_TEMPO_TOKEN:-}")]
     TRK_JIRA_ACCOUNT_ID      Jira account id; skips /myself [current: ${TRK_JIRA_ACCOUNT_ID:-unset}]
-    TRK_JIRA_TEMPO_URL       Tempo cluster URL [current: $tempo_origin]
     TRK_JIRA_JQL             issue inventory JQL
+    TRK_JIRA_WORKLOG_JQL     base JQL used to discover your worklog issues
     TRK_JIRA_START_TIME      worklog start time [current: $start_time]
     TRK_JIRA_ASSUME_YES      permit non-interactive deletions
     TRK_JIRA_CACHE_DIR       cache directory [current: $cache_root]
@@ -188,7 +179,6 @@ _urlencode() { jq -rn --arg value "$1" '$value | @uri'; }
 _validate_config() {
     [ -n "$jira_base_url" ] || _err "set TRK_JIRA_BASE_URL"
     case $jira_base_url in http://*|https://*) ;; *) _err "invalid TRK_JIRA_BASE_URL: [$jira_base_url]" ;; esac
-    case $tempo_origin in http://*|https://*) ;; *) _err "invalid TRK_JIRA_TEMPO_URL: [$tempo_origin]" ;; esac
     case $start_time in [0-1][0-9]:[0-5][0-9]:[0-5][0-9]|2[0-3]:[0-5][0-9]:[0-5][0-9]) ;; *) _err "TRK_JIRA_START_TIME must be HH:MM:SS" ;; esac
     _is_positive_integer "$max_attempts" || _err "TRK_JIRA_MAX_ATTEMPTS must be positive"
     _is_positive_integer "$connect_timeout" || _err "TRK_JIRA_CONNECT_TIMEOUT must be positive"
@@ -243,19 +233,16 @@ _date_range_from_pattern() {
 }
 _resolve_date_range() {
     range_from=; range_to=; [ "$filter_selects_period" -eq 1 ] || return; [ -n "$filter_pattern" ] || return
-    resolved=$(_date_range_from_pattern "$filter_pattern") || _err "cannot derive a safe Tempo date range from [$filter]"
+    resolved=$(_date_range_from_pattern "$filter_pattern") || _err "cannot derive a safe Jira date range from [$filter]"
     range_from=${resolved%% *}; range_to=${resolved##* }
 }
 
 # --- HTTP and authentication ---------------------------------------------
 
 _api_setup() {
-    jira_email=${TRK_JIRA_EMAIL:-}; jira_token=${TRK_JIRA_API_TOKEN:-}; tempo_token=${TRK_JIRA_TEMPO_TOKEN:-}
+    jira_email=${TRK_JIRA_EMAIL:-}; jira_token=${TRK_JIRA_API_TOKEN:-}
     [ -n "$jira_email" ] || _err "set TRK_JIRA_EMAIL"
     [ -n "$jira_token" ] || _err "set TRK_JIRA_API_TOKEN"
-    [ -n "$tempo_token" ] || _err "set TRK_JIRA_TEMPO_TOKEN"
-    case $tempo_token in *'"'*|*'
-'*) _err "Tempo token contains invalid characters" ;; esac
     cache_scope=$(printf '%s\n%s\n' "$jira_base_url" "$jira_email" | cksum | awk '{print $1}')
     cache_dir="$cache_root/accounts/$cache_scope"; issues_cache="$cache_dir/issues.jsonl"; issue_map_cache="$cache_dir/issues.data"
     mkdir -p "$cache_dir" || _err "cannot create cache directory: [$cache_dir]"
@@ -263,11 +250,9 @@ _api_setup() {
     mkdir -p "$log_directory" || _err "cannot create log directory: [$log_directory]"
     : >>"$logfile" || _err "cannot write API log: [$logfile]"
     jira_basic=$(printf '%s:%s' "$jira_email" "$jira_token" | base64 | tr -d '\n')
-    jira_curl_config="$work_directory/jira-curl.conf"; tempo_curl_config="$work_directory/tempo-curl.conf"
+    jira_curl_config="$work_directory/jira-curl.conf"
     { printf 'silent\nshow-error\n'; printf 'connect-timeout = %s\nmax-time = %s\n' "$connect_timeout" "$max_time"
       printf 'header = "Accept: application/json"\nheader = "Authorization: Basic %s"\nheader = "User-Agent: trk-jira/%s"\n' "$jira_basic" "$version"; } >"$jira_curl_config" || _err "cannot write Jira curl configuration"
-    { printf 'silent\nshow-error\n'; printf 'connect-timeout = %s\nmax-time = %s\n' "$connect_timeout" "$max_time"
-      printf 'header = "Accept: application/json"\nheader = "Authorization: Bearer %s"\nheader = "User-Agent: trk-jira/%s"\n' "$tempo_token" "$version"; } >"$tempo_curl_config" || _err "cannot write Tempo curl configuration"
     response_body="$work_directory/response.json"; response_headers="$work_directory/response.headers"
 }
 _error_message() {
@@ -295,7 +280,6 @@ _http_request() {
     done
 }
 _jira_get() { _http_request Jira "$jira_curl_config" GET "$1" "" 1; }
-_tempo_get() { _http_request Tempo "$tempo_curl_config" GET "$1" "" 1; }
 _resolve_account() {
     if [ -n "${TRK_JIRA_ACCOUNT_ID:-}" ]; then jira_account_id=$TRK_JIRA_ACCOUNT_ID
     else _jira_get "$jira_base_url/rest/api/3/myself" || _err "cannot read Jira /myself ($http_status): $(_error_message)"
@@ -317,22 +301,27 @@ _build_issue_map() {
     LC_ALL=C sort -t "$separator" -k1,1 -u "$map_unsorted" >"$map_output"
 }
 
-_refresh_issues() {
-    issues_new="$work_directory/issues.jsonl"; map_new="$work_directory/issues.data"; : >"$issues_new"
-    next_token=
+_jira_search_issues() {
+    search_jql=$1; search_output=$2; : >"$search_output"
+    search_next_token=
     while :; do
-        payload="$work_directory/jira-search.json"
-        jq -n --arg jql "$jira_jql" --arg token "$next_token" '
+        search_payload="$work_directory/jira-search.json"
+        jq -n --arg jql "$search_jql" --arg token "$search_next_token" '
             {jql:$jql,maxResults:100,fields:["summary","project"]}
-            +(if $token=="" then {} else {nextPageToken:$token} end)' >"$payload" || _err "cannot build Jira search request"
-        _http_request Jira "$jira_curl_config" POST "$jira_base_url/rest/api/3/search/jql" "$payload" 1 ||
+            +(if $token=="" then {} else {nextPageToken:$token} end)' >"$search_payload" || _err "cannot build Jira search request"
+        _http_request Jira "$jira_curl_config" POST "$jira_base_url/rest/api/3/search/jql" "$search_payload" 1 ||
             _err "Jira issue search failed ($http_status): $(_error_message)"
         jq -e '.issues|arrays' "$response_body" >/dev/null || _err "unexpected Jira search response"
-        cat "$response_body" >>"$issues_new"; printf '\n' >>"$issues_new"
-        is_last=$(jq -r '.isLast//false' "$response_body"); next_token=$(jq -r '.nextPageToken//empty' "$response_body")
-        [ "$is_last" = true ] && break
-        [ -n "$next_token" ] || _err "Jira search pagination omitted nextPageToken"
+        cat "$response_body" >>"$search_output"; printf '\n' >>"$search_output"
+        search_is_last=$(jq -r '.isLast//false' "$response_body")
+        search_next_token=$(jq -r '.nextPageToken//empty' "$response_body")
+        [ "$search_is_last" = true ] && break
+        [ -n "$search_next_token" ] || _err "Jira search pagination omitted nextPageToken"
     done
+}
+_refresh_issues() {
+    issues_new="$work_directory/issues.jsonl"; map_new="$work_directory/issues.data"
+    _jira_search_issues "$jira_jql" "$issues_new"
     _build_issue_map "$issues_new" "$map_new"
     mv "$issues_new" "$issues_cache" || _err "cannot update Jira issue cache"
     mv "$map_new" "$issue_map_cache" || _err "cannot update Jira issue map"
@@ -376,30 +365,29 @@ _normalization_awk='
     function is_tag(w){return w~/^\+[[:alnum:]_][[:alnum:]_-]*(:[[:alnum:]_][[:alnum:]_-]*)?$/}
     function normalise(s,p,n,i,r){n=split(s,p,/[ \t]+/);r="";for(i=1;i<=n;i++)if(p[i]!="")r=r==""?p[i]:r " " p[i];return r}'
 
-# Output: day seconds issue-ref notes billable
+# Output: day seconds issue-ref notes
 _trk_entries_unresolved() {
     unresolved_output=$1; unresolved_filter=$2; unresolved_raw="$work_directory/trk-records.txt"
     if [ -n "$unresolved_filter" ]; then _trk l --grep "$unresolved_filter" >"$unresolved_raw"; trk_list_status=$?; [ "$trk_list_status" -le 1 ] || _err "cannot list filtered trk records"
     else _trk l >"$unresolved_raw" || _err "cannot list trk records"; fi
-    awk -v OFS="$separator" -v sep="$separator" -v marker="$trk_issue_tag" -v billable_marker="$trk_billable_tag" -v program="$scriptname" \
+    awk -v OFS="$separator" -v sep="$separator" -v marker="$trk_issue_tag" -v program="$scriptname" \
         "$_normalization_awk"'
         function valid_ref(v){return v~/^([[:alpha:]][[:alnum:]_]*-[0-9]+|[0-9]+)$/}
-        { day=$1;seconds=int(($2+0)*3600+0.5);issue="";notes="";billable="false";count=0
+        { day=$1;seconds=int(($2+0)*3600+0.5);issue="";notes="";count=0
           for(f=3;f<=NF;f++){
             if($f==marker||index($f,marker ":")==1){count++;issue=$f==marker?"":substr($f,length(marker)+2);continue}
-            if($f==billable_marker){billable="true";continue}
             if(is_tag($f))continue
             notes=notes==""?$f:notes " " $f
           }
           if(count==0)next
           if(count!=1||!valid_ref(issue)||seconds<1){printf "%s: error: invalid Jira mapping: %s\n",program,$0>"/dev/stderr";bad++;next}
           if(issue!~/^[0-9]+$/)issue=toupper(issue);notes=normalise(notes);gsub(sep," ",notes)
-          print day,seconds,issue,notes,billable
+          print day,seconds,issue,notes
         }
         END{if(bad)exit 1}' "$unresolved_raw" >"$unresolved_output" || _err "one or more trk records have an invalid Jira mapping"
 }
 
-# Output: day seconds issue-id issue-key notes billable
+# Output: day seconds issue-id issue-key notes
 _resolve_trk_entries() {
     resolved_input=$1; resolved_output=$2; resolved_refs="$work_directory/issue-refs.txt"
     [ -f "$issue_map_cache" ] || : >"$issue_map_cache"
@@ -408,7 +396,7 @@ _resolve_trk_entries() {
     awk -F"$separator" -v OFS="$separator" -v map="$issue_map_cache" -v program="$scriptname" '
         BEGIN{while((getline line<map)>0){split(line,p,FS);id[p[1]]=p[3];key[p[1]]=p[2];id[p[2]]=p[3];key[p[2]]=p[2];id[p[3]]=p[3];key[p[3]]=p[2]}close(map)}
         {if(!($3 in id)){printf "%s: error: unresolved Jira issue: %s\n",program,$3>"/dev/stderr";bad++;next}
-         print $1,$2,id[$3],key[$3],$4,$5}
+         print $1,$2,id[$3],key[$3],$4}
         END{if(bad)exit 1}' "$resolved_input" >"$resolved_output" || _err "cannot resolve one or more Jira issues"
 }
 _trk_entries_machine() {
@@ -417,105 +405,155 @@ _trk_entries_machine() {
     _resolve_trk_entries "$machine_unresolved" "$machine_output"
 }
 
-# --- Tempo worklogs --------------------------------------------------------
+# --- Jira worklogs ---------------------------------------------------------
 
-_tempo_get_all() {
-    page_url=$1
-    while [ -n "$page_url" ]; do
-        _tempo_get "$page_url" || _err "Tempo GET failed ($http_status): $(_error_message)"
-        jq -e '.results|arrays' "$response_body" >/dev/null || _err "unexpected Tempo pagination response"
-        cat "$response_body"; printf '\n'
-        next=$(jq -r '.metadata.next//empty' "$response_body")
-        case $next in '') page_url= ;; /*) page_url="$tempo_origin$next" ;;
-            "$tempo_origin"/*) page_url=$next ;; http://*|https://*) _err "refusing cross-origin Tempo pagination link: [$next]" ;;
-            *) page_url="$tempo_origin/$next" ;; esac
-    done
+_worklog_discovery_jql() {
+    discovery_jql="($worklog_jql)"
+    [ -n "$range_from" ] && discovery_jql="$discovery_jql AND worklogDate >= \"$range_from\""
+    [ -n "$range_to" ] && discovery_jql="$discovery_jql AND worklogDate <= \"$range_to\""
+    printf '%s ORDER BY updated DESC\n' "$discovery_jql"
 }
 
-# Output: day seconds worklog-id issue-id author owned notes
-_tempo_worklogs_machine() {
-    tempo_machine_output=$1; [ -n "$jira_account_id" ] || _resolve_account
-    tempo_account_encoded=$(_urlencode "$jira_account_id"); tempo_list_url="$tempo_api/worklogs/user/$tempo_account_encoded?limit=1000"
-    [ -n "$range_from" ] && tempo_list_url="$tempo_list_url&from=$range_from"; [ -n "$range_to" ] && tempo_list_url="$tempo_list_url&to=$range_to"
-    tempo_list_raw="$work_directory/tempo-worklogs.jsonl"; _tempo_get_all "$tempo_list_url" >"$tempo_list_raw"
-    jq -r --arg sep "$separator" --arg marker "$worklog_marker" --arg author "$jira_account_id" --arg from "$range_from" --arg to "$range_to" '
-        .results[]
-        | select((.author.accountId//"") == $author)
-        | select(($from=="" or ((.startDate//"") >= $from)) and ($to=="" or ((.startDate//"") <= $to)))
-        | (.description//""|tostring) as $d
-        | (($d==$marker) or ($d|startswith($marker+" "))) as $owned
-        | (if $owned then if $d==$marker then "" else $d[(($marker|length)+1):] end else $d end
-           |gsub("[\\t\\r\\n]";" ")|gsub($sep;" ")) as $notes
-        | (.issue.id//(try((.issue.self//"")|capture("(?<id>[0-9]+)$").id)catch "")) as $iid
-        | [(.startDate//""|tostring),(.timeSpentSeconds//""|tostring),(.tempoWorklogId//""|tostring),
-           ($iid|tostring),(.author.accountId//""|tostring),($owned|tostring),$notes]|join($sep)' "$tempo_list_raw" >"$tempo_machine_output" ||
-        _err "cannot normalise Tempo worklogs"
+# Output: issue-id issue-key
+_discover_worklog_issues() {
+    discovery_output=$1
+    discovery_json="$work_directory/worklog-issues.jsonl"
+    discovery_query=$(_worklog_discovery_jql)
+    _jira_search_issues "$discovery_query" "$discovery_json"
+    jq -r --arg sep "$separator" '.issues[]|[(.id//""|tostring),(.key//""|tostring)]|join($sep)' \
+        "$discovery_json" | LC_ALL=C sort -t "$separator" -k1,1 -u >"$discovery_output" ||
+        _err "cannot normalise Jira worklog issue search"
 }
-_tempo_add_worklog() {
-    day=$1; seconds=$2; issue_id=$3; notes=$4; billable=$5
-    if [ -n "$notes" ]; then description="$worklog_marker $notes"; else description=$worklog_marker; fi
-    payload="$work_directory/tempo-add.json"
-    jq -n --argjson iid "$issue_id" --argjson seconds "$seconds" --arg author "$jira_account_id" \
-        --arg day "$day" --arg time "$start_time" --arg description "$description" --argjson billable "$billable" '
-        {issueId:$iid,timeSpentSeconds:$seconds,authorAccountId:$author,startDate:$day,startTime:$time,description:$description}
-        +(if $billable then {billableSeconds:$seconds} else {} end)' >"$payload" || _err "cannot build Tempo worklog payload"
-    _http_request Tempo "$tempo_curl_config" POST "$tempo_api/worklogs" "$payload" 0 && return
+
+# Output: day seconds worklog-id issue-id issue-key author owned notes
+_jira_worklogs_machine() {
+    jira_worklogs_output=$1; [ -n "$jira_account_id" ] || _resolve_account
+    jira_worklog_issues="$work_directory/worklog-issues.data"
+    _discover_worklog_issues "$jira_worklog_issues"
+    : >"$jira_worklogs_output"
+
+    worklog_started_after=
+    worklog_started_before=
+    if [ -n "$range_from" ]; then
+        worklog_boundary_seconds=$(date -d "$range_from 00:00:00 - 1 second" '+%s') ||
+            _err "cannot calculate Jira worklog start boundary"
+        worklog_started_after=$((worklog_boundary_seconds * 1000))
+    fi
+    if [ -n "$range_to" ]; then
+        worklog_boundary_seconds=$(date -d "$range_to + 1 day 00:00:00" '+%s') ||
+            _err "cannot calculate Jira worklog end boundary"
+        worklog_started_before=$((worklog_boundary_seconds * 1000))
+    fi
+
+    while IFS="$separator" read -r worklog_issue_id worklog_issue_key; do
+        [ -n "$worklog_issue_id" ] || continue
+        _is_positive_integer "$worklog_issue_id" || _err "invalid issue id in Jira search response"
+        _valid_issue_ref "$worklog_issue_key" || _err "invalid issue key in Jira search response"
+        worklog_issue_encoded=$(_urlencode "$worklog_issue_key")
+        worklog_start_at=0
+        while :; do
+            worklog_url="$jira_base_url/rest/api/3/issue/$worklog_issue_encoded/worklog?startAt=$worklog_start_at&maxResults=1000"
+            [ -n "$worklog_started_after" ] && worklog_url="$worklog_url&startedAfter=$worklog_started_after"
+            [ -n "$worklog_started_before" ] && worklog_url="$worklog_url&startedBefore=$worklog_started_before"
+            _jira_get "$worklog_url" || _err "cannot read Jira worklogs for [$worklog_issue_key] ($http_status): $(_error_message)"
+            jq -e '.worklogs|arrays' "$response_body" >/dev/null || _err "unexpected Jira worklog response for [$worklog_issue_key]"
+            jq -r --arg sep "$separator" --arg marker "$worklog_marker" --arg author "$jira_account_id" \
+                --arg iid "$worklog_issue_id" --arg ikey "$worklog_issue_key" --arg from "$range_from" --arg to "$range_to" '
+                .worklogs[]
+                | select((.author.accountId//"") == $author)
+                | ((.started//"")[0:10]) as $day
+                | select(($from=="" or $day >= $from) and ($to=="" or $day <= $to))
+                | (if (.comment|type)=="string" then .comment
+                   elif (.comment|type)=="object" then ([.comment|..|objects|select(.type?=="text")|.text//empty]|join(""))
+                   else "" end) as $d
+                | (($d==$marker) or ($d|startswith($marker+" "))) as $owned
+                | (if $owned then if $d==$marker then "" else $d[(($marker|length)+1):] end else $d end
+                   |gsub("[\\t\\r\\n ]+";" ")|sub("^ ";"")|sub(" $";"")|gsub($sep;" ")) as $notes
+                | [$day,(.timeSpentSeconds//""|tostring),(.id//""|tostring),$iid,$ikey,
+                   (.author.accountId//""|tostring),($owned|tostring),$notes]|join($sep)' \
+                "$response_body" >>"$jira_worklogs_output" || _err "cannot normalise Jira worklogs for [$worklog_issue_key]"
+            worklog_page_count=$(jq '.worklogs|length' "$response_body")
+            worklog_total=$(jq -r '.total//0' "$response_body")
+            case $worklog_page_count:$worklog_total in :*|*:|*[!0-9:]*) _err "invalid Jira worklog pagination" ;; esac
+            worklog_next_at=$((worklog_start_at + worklog_page_count))
+            [ "$worklog_next_at" -ge "$worklog_total" ] && break
+            [ "$worklog_page_count" -gt 0 ] || _err "Jira worklog pagination made no progress"
+            worklog_start_at=$worklog_next_at
+        done
+    done <"$jira_worklog_issues"
+}
+
+_jira_add_worklog() {
+    add_day=$1; add_seconds=$2; add_issue=$3; add_notes=$4
+    if [ -n "$add_notes" ]; then add_description="$worklog_marker $add_notes"; else add_description=$worklog_marker; fi
+    add_started=$(date -d "$add_day $start_time" '+%Y-%m-%dT%H:%M:%S.000%z') || return 1
+    add_payload="$work_directory/jira-add.json"
+    jq -n --argjson seconds "$add_seconds" --arg started "$add_started" --arg description "$add_description" '
+        {timeSpentSeconds:$seconds,started:$started,
+         comment:{type:"doc",version:1,content:[{type:"paragraph",content:[{type:"text",text:$description}]}]}}' \
+        >"$add_payload" || _err "cannot build Jira worklog payload"
+    add_issue_encoded=$(_urlencode "$add_issue")
+    _http_request Jira "$jira_curl_config" POST \
+        "$jira_base_url/rest/api/3/issue/$add_issue_encoded/worklog?adjustEstimate=leave" "$add_payload" 0 && return
     api_last_error=$(_error_message); return 1
 }
-_tempo_delete_worklog() {
-    _http_request Tempo "$tempo_curl_config" DELETE "$tempo_api/worklogs/$1" "" 1 && return
+
+_jira_delete_worklog() {
+    delete_issue_encoded=$(_urlencode "$1")
+    _http_request Jira "$jira_curl_config" DELETE \
+        "$jira_base_url/rest/api/3/issue/$delete_issue_encoded/worklog/$2?adjustEstimate=leave" "" 1 && return
     [ "$http_status" = 404 ] && return
     api_last_error=$(_error_message); return 1
 }
 
-# Input: day seconds worklog-id issue-id author owned notes
-# Output: day seconds issue-id notes worklog-id owned
-_tempo_entries_key_machine() {
+# Input: day seconds worklog-id issue-id issue-key author owned notes
+# Output: day seconds issue-id notes worklog-id issue-key owned
+_jira_entries_key_machine() {
     keyed_input=$1; keyed_output=$2
     awk -F"$separator" -v OFS="$separator" -v program="$scriptname" '
         function date(v){return v~/^[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]$/}
         function positive(v){return v~/^[0-9]+$/&&v+0>0}
-        {if(NF!=7||!date($1)||!positive($2)||!positive($3)||!positive($4)||($6!="true"&&$6!="false")){
-            printf "%s: error: malformed Tempo worklog: %s\n",program,$0>"/dev/stderr";bad++;next}
-         print $1,$2,$4,$7,$3,$6}
-        END{if(bad)exit 1}' "$keyed_input" >"$keyed_output" || _err "cannot safely normalise Tempo worklogs"
+        {if(NF!=8||!date($1)||!positive($2)||!positive($3)||!positive($4)||$5==""||($7!="true"&&$7!="false")){
+            printf "%s: error: malformed Jira worklog: %s\n",program,$0>"/dev/stderr";bad++;next}
+         print $1,$2,$4,$8,$3,$5,$7}
+        END{if(bad)exit 1}' "$keyed_input" >"$keyed_output" || _err "cannot safely normalise Jira worklogs"
 }
 
 # --- plan and sync ---------------------------------------------------------
 
-# Plan: op day seconds issue-id issue-key worklog-id notes billable ownership
+# Plan: op day seconds issue-id issue-key worklog-id notes ownership
 _build_plan() {
     plan_output=$1; _check_trkfile
     local_selected="$work_directory/local-selected.data"; local_scope="$work_directory/local-scope.data"
     _trk_entries_machine "$local_selected" "$filter_pattern"
     if [ "$filter_selects_period" -eq 1 ]; then cp "$local_selected" "$local_scope"; else : >"$local_scope"; fi
-    tempo_raw="$work_directory/tempo-raw.data"; tempo_keyed="$work_directory/tempo-keyed.data"
-    _tempo_worklogs_machine "$tempo_raw"; _tempo_entries_key_machine "$tempo_raw" "$tempo_keyed"
+    jira_raw="$work_directory/jira-worklogs-raw.data"; jira_keyed="$work_directory/jira-worklogs-keyed.data"
+    _jira_worklogs_machine "$jira_raw"; _jira_entries_key_machine "$jira_raw" "$jira_keyed"
     unmanaged_file="$work_directory/unmanaged.count"; : >"$unmanaged_file"
     {
-        awk -F"$separator" -v OFS="$separator" -v remote="$tempo_keyed" '
+        awk -F"$separator" -v OFS="$separator" -v remote="$jira_keyed" '
             BEGIN{while((getline line<remote)>0){split(line,p,FS);available[p[1] FS p[2] FS p[3] FS p[4]]++}close(remote)}
             {k=$1 FS $2 FS $3 FS $5
-             if(used[k]<available[k]){used[k]++;print "=",$1,$2,$3,$4,"-",$5,$6,"-"}
-             else print "+",$1,$2,$3,$4,"-",$5,$6,"-"}' "$local_selected"
+             if(used[k]<available[k]){used[k]++;print "=",$1,$2,$3,$4,"-",$5,"-"}
+             else print "+",$1,$2,$3,$4,"-",$5,"-"}' "$local_selected"
         if [ "$filter_selects_period" -eq 1 ]; then
             awk -F"$separator" -v OFS="$separator" -v local="$local_scope" -v unmanaged="$unmanaged_file" '
                 BEGIN{while((getline line<local)>0){split(line,p,FS);available[p[1] FS p[2] FS p[3] FS p[5]]++}close(local)}
                 {k=$1 FS $2 FS $3 FS $4
                  if(used[k]<available[k]){used[k]++;next}
-                 if($6!="true"){unowned++;next}
-                 print "-",$1,$2,$3,"-",$5,$4,"-","managed"}
-                END{printf "%d\n",unowned+0>unmanaged}' "$tempo_keyed"
+                 if($7!="true"){unowned++;next}
+                 print "-",$1,$2,$3,$6,$5,$4,"managed"}
+                END{printf "%d\n",unowned+0>unmanaged}' "$jira_keyed"
         fi
     } | LC_ALL=C sort -t "$separator" -k2,2 -k1,1 -k3,3 >"$plan_output"
     unmanaged_count=$(cat "$unmanaged_file" 2>/dev/null || printf 0)
-    [ "$unmanaged_count" -eq 0 ] || _info "left alone: $unmanaged_count unmatched unmanaged Tempo worklog(s)"
+    [ "$unmanaged_count" -eq 0 ] || _info "left alone: $unmanaged_count unmatched unmanaged Jira worklog(s)"
     [ "$filter_selects_period" -eq 1 ] || _warn "grep filter: additions only; deletions skipped"
 }
 _print_plan() {
     awk -F"$separator" '{symbol=$1=="="?"\342\234\223":$1;issue=$5!="-"?"+jid:"$5:"+jid:"$4
         line=sprintf("%s %s %.2f %s",symbol,$2,$3/3600,issue)
-        if($6!="-")line=line " wid:"$6;if($8=="true")line=line " billable";if($7!="")line=line " "$7;print line}' "$1"
+        if($6!="-")line=line " wid:"$6;if($7!="")line=line " "$7;print line}' "$1"
 }
 plan() {
     _parse_filter "$@"; _resolve_date_range; _api_setup; _resolve_account
@@ -528,20 +566,20 @@ sync() {
     grep -v -e "^=$separator" "$file" >"$pending" || :
     if [ ! -s "$pending" ]; then _info "nothing to sync"; return; fi
     _print_plan "$pending"; printf '\n'; deletions=$(grep -c -e "^-$separator" "$pending" || :)
-    if [ "$deletions" -gt 0 ]; then _confirm "$deletions managed Tempo worklog(s) will be deleted, continue?" ||
+    if [ "$deletions" -gt 0 ]; then _confirm "$deletions managed Jira worklog(s) will be deleted, continue?" ||
         _err "deletion not authorised; rerun interactively or pass -y"; fi
     _info "syncing additions..."; added=0; failed=0
-    while IFS="$separator" read -r op day seconds issue_id issue_key worklog_id notes billable ownership; do
+    while IFS="$separator" read -r op day seconds issue_id issue_key worklog_id notes ownership; do
         [ "$op" = + ] || continue
-        if _tempo_add_worklog "$day" "$seconds" "$issue_id" "$notes" "$billable"; then
+        if _jira_add_worklog "$day" "$seconds" "$issue_key" "$notes"; then
             added=$((added+1)); _info "added: $day $(_format_seconds "$seconds") +jid:$issue_key $notes"
         else failed=$((failed+1)); _warn "cannot add ($http_status): $day +jid:$issue_key - $api_last_error"; fi
     done <"$pending"
     if [ "$failed" -gt 0 ]; then _warn "$failed addition(s) failed; no deletion attempted"; _warn "rerun sync after checking: $logfile"; return 1; fi
     _info "syncing deletions..."; deleted=0; delete_failed=0
-    while IFS="$separator" read -r op day seconds issue_id issue_key worklog_id notes billable ownership; do
+    while IFS="$separator" read -r op day seconds issue_id issue_key worklog_id notes ownership; do
         [ "$op" = - ] || continue
-        if _tempo_delete_worklog "$worklog_id"; then deleted=$((deleted+1)); _info "deleted: wid:$worklog_id $day $(_format_seconds "$seconds") $notes"
+        if _jira_delete_worklog "$issue_key" "$worklog_id"; then deleted=$((deleted+1)); _info "deleted: wid:$worklog_id $day $(_format_seconds "$seconds") $notes"
         else delete_failed=$((delete_failed+1)); _warn "cannot delete wid:$worklog_id ($http_status): $api_last_error"; fi
     done <"$pending"
     _info "sync complete: $added added, $deleted deleted, $delete_failed failed"
@@ -552,10 +590,10 @@ sync() {
 
 list_worklogs() {
     _parse_filter "$@"; _resolve_date_range; _api_setup; _resolve_account
-    worklogs="$work_directory/list-worklogs.data"; _tempo_worklogs_machine "$worklogs"
+    worklogs="$work_directory/list-worklogs.data"; _jira_worklogs_machine "$worklogs"
     candidates="$work_directory/list-candidates.data"
-    awk -F"$separator" -v OFS="$separator" '{line=sprintf("%s %.2f wid:%s +jid:%s",$1,$2/3600,$3,$4)
-        if($6=="true")line=line " managed";if($7!="")line=line " "$7;print $2,line}' "$worklogs" >"$candidates"
+    awk -F"$separator" -v OFS="$separator" '{line=sprintf("%s %.2f wid:%s +jid:%s",$1,$2/3600,$3,$5)
+        if($7=="true")line=line " managed";if($8!="")line=line " "$8;print $2,line}' "$worklogs" >"$candidates"
     selected="$work_directory/list-selected.data"
     if [ "$filter_selects_period" -eq 0 ] && [ -n "$filter_pattern" ]; then grep -e "$filter_pattern" "$candidates" >"$selected" || :
     else cp "$candidates" "$selected"; fi
@@ -565,8 +603,6 @@ list_worklogs() {
 }
 
 add_worklog() {
-    billable=false
-    while [ "$#" -gt 0 ]; do case $1 in -b|--billable) billable=true; shift ;; --) shift; break ;; *) break ;; esac; done
     [ "$#" -ge 3 ] || { usage >&2; exit 1; }
     day=$1; hours=$2; issue=$3; shift 3; notes=$*
     _trk_run _validate_date "$day" || _err "invalid date: [$day]"; day=$(date -d "$day" '+%Y-%m-%d') || _err "cannot normalise date"
@@ -574,15 +610,21 @@ add_worklog() {
     seconds=$(awk -v h="$hours" 'BEGIN{printf "%.0f\n",h*3600}'); _is_positive_integer "$seconds" || _err "hours must be greater than zero"
     issue=$(_normalize_issue_ref "$issue"); _valid_issue_ref "$issue" || _err "invalid Jira issue key or id: [$issue]"
     _api_setup; _resolve_account; _resolve_issue "$issue"
-    issue_id=$(awk -F"$separator" -v i="$issue" '$1==i||$2==i||$3==i{print $3;exit}' "$issue_map_cache")
     issue_key=$(awk -F"$separator" -v i="$issue" '$1==i||$2==i||$3==i{print $2;exit}' "$issue_map_cache")
-    _tempo_add_worklog "$day" "$seconds" "$issue_id" "$notes" "$billable" || _err "cannot add Tempo worklog ($http_status): $api_last_error"
+    _jira_add_worklog "$day" "$seconds" "$issue_key" "$notes" || _err "cannot add Jira worklog ($http_status): $api_last_error"
     _info "worklog added: $day $(_format_seconds "$seconds") +jid:$issue_key $notes"
 }
 delete_worklog() {
-    [ "$#" -eq 1 ] || _err "delete requires exactly one Tempo worklog id"
-    _is_positive_integer "$1" || _err "invalid Tempo worklog id: [$1]"
-    _api_setup; _tempo_delete_worklog "$1" || _err "cannot delete Tempo worklog [$1] ($http_status): $api_last_error"
+    [ "$#" -eq 1 ] || _err "delete requires exactly one Jira worklog id"
+    _is_positive_integer "$1" || _err "invalid Jira worklog id: [$1]"
+    direct_worklog_id=$1; _api_setup
+    direct_payload="$work_directory/jira-worklog-list.json"
+    jq -n --argjson id "$direct_worklog_id" '{ids:[$id]}' >"$direct_payload" || _err "cannot build Jira worklog lookup"
+    _http_request Jira "$jira_curl_config" POST "$jira_base_url/rest/api/3/worklog/list" "$direct_payload" 1 ||
+        _err "cannot resolve Jira worklog [$direct_worklog_id] ($http_status): $(_error_message)"
+    direct_issue_id=$(jq -r --arg id "$direct_worklog_id" '.[]|select((.id|tostring)==$id)|.issueId//empty' "$response_body")
+    _is_positive_integer "$direct_issue_id" || _err "Jira worklog not found: [$direct_worklog_id]"
+    _jira_delete_worklog "$direct_issue_id" "$direct_worklog_id" || _err "cannot delete Jira worklog [$direct_worklog_id] ($http_status): $api_last_error"
     _info "worklog deleted: $1"
 }
 doctor() {
@@ -590,12 +632,12 @@ doctor() {
     _check_trkfile; _api_setup; _resolve_account; _refresh_issues
     unresolved="$work_directory/doctor-unresolved.data"; resolved="$work_directory/doctor-resolved.data"
     _trk_entries_unresolved "$unresolved" ""; _resolve_trk_entries "$unresolved" "$resolved"
-    range_from=$(date '+%Y-%m-%d'); range_to=$range_from; remote="$work_directory/doctor-worklogs.data"; _tempo_worklogs_machine "$remote"
+    range_from=$(date '+%Y-%m-%d'); range_to=$range_from; remote="$work_directory/doctor-worklogs.data"; _jira_worklogs_machine "$remote"
     issue_count=$(wc -l <"$issue_map_cache" | tr -d ' ')
     mapping_count=$(awk -F"$separator" '{seen[$3]=1}END{for(k in seen)n++;print n+0}' "$resolved")
     _info "trk $trk_version: valid"; _info "Jira authentication: account $jira_account_id"
     _info "Jira inventory: $issue_count issue(s)"; _info "trk mappings: $mapping_count issue(s) resolved"
-    _info "Tempo API: accessible"; _info "doctor: ok"
+    _info "Jira worklogs: accessible"; _info "doctor: ok"
 }
 
 main() {
