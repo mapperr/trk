@@ -1,6 +1,6 @@
 #!/bin/sh
 
-version="0.3.0"
+version="0.4.1"
 required_trk_version="0.7.0"
 dependencies="curl jq trk"
 
@@ -53,7 +53,9 @@ usage() {
         lists cached global tasks, or tasks assigned to one project
     $scriptname tt [-p project_id] [pattern]
         refreshes and lists global or project-assigned tasks
-    $scriptname refresh           refreshes both inventories
+    $scriptname i [pattern]       lists the cached project/task inventory
+    $scriptname ii [pattern]      refreshes and lists the complete inventory
+    $scriptname refresh           refreshes all inventories
 
     $scriptname a [-b] [-p project_id] <date> <hours> <task_id> [project_id] [notes]
         adds one managed time entry; project_id is required, by -p or position
@@ -99,8 +101,15 @@ Inventories:
     '$scriptname j' and '$scriptname t' print ready-to-copy tags. Their caches
     are scoped by Keito company id. '$scriptname t -p <project_id>' prints
     ready-to-copy +kpid/+kid pairs for tasks assigned to that project. Use
-    jj/tt after Keito changes; refresh also updates project task sets already
-    present in the cache.
+    jj/tt after Keito changes.
+
+    '$scriptname i' combines every visible active project with its assigned
+    active tasks, then appends workspace tasks which have no visible active
+    project assignment. Its columns are tags, client, project code, project and
+    task. Missing client/code values are '-'; a project without tasks is shown
+    as 'Nessun Task'. Here 'Nessun Progetto' means no project visible to the
+    current credential. The first invocation builds the cache; ii and refresh
+    rebuild it completely.
 
 Project-task validation:
     Tasks are defined workspace-wide but assigned individually to projects.
@@ -322,6 +331,8 @@ _keito_setup() {
     account_cache_dir="$cache_dir/accounts/$keito_account_id"
     projects_cache="$account_cache_dir/projects.jsonl"
     tasks_cache="$account_cache_dir/tasks.jsonl"
+    # Versioned because the cache stores the final display schema.
+    inventory_cache="$account_cache_dir/inventory-v2.txt"
     mkdir -p "$account_cache_dir" || _err "cannot create cache: [$account_cache_dir]"
     log_directory=$(dirname "$logfile")
     mkdir -p "$log_directory" || _err "cannot create log directory: [$log_directory]"
@@ -460,12 +471,14 @@ _refresh_projects() {
     _keito_get_all "$keito_api/projects?is_active=true&per_page=100" >"$projects_new"
     jq -e '.projects | arrays' "$projects_new" >/dev/null || _err "unexpected projects response"
     mv "$projects_new" "$projects_cache" || _err "cannot update project cache"
+    rm -f "$inventory_cache" || _err "cannot invalidate combined inventory cache"
 }
 _refresh_tasks() {
     tasks_new="$work_directory/tasks.jsonl"
     _keito_get_all "$keito_api/tasks?is_active=true&per_page=100" >"$tasks_new"
     jq -e '.tasks | arrays' "$tasks_new" >/dev/null || _err "unexpected tasks response"
     mv "$tasks_new" "$tasks_cache" || _err "cannot update task cache"
+    rm -f "$inventory_cache" || _err "cannot invalidate combined inventory cache"
 }
 _project_tasks_cache_path() {
     _is_id "$1" || _err "invalid project id: [$1]"
@@ -484,6 +497,7 @@ _refresh_project_tasks() {
         _err "unexpected project tasks response for [$project_tasks_id]"
     mv "$project_tasks_new" "$project_tasks_cache" ||
         _err "cannot update task cache for project [$project_tasks_id]"
+    rm -f "$inventory_cache" || _err "cannot invalidate combined inventory cache"
 }
 _ensure_projects() { [ -s "$projects_cache" ] || _refresh_projects; }
 _ensure_tasks() { [ -s "$tasks_cache" ] || _refresh_tasks; }
@@ -545,26 +559,110 @@ print_tasks() {
     if [ -n "$tasks_pattern" ]; then grep -i -e "$tasks_pattern" "$tasks_display"; else cat "$tasks_display"; fi
 }
 
+# Build a flattened, ready-to-copy inventory. Project/task pairs are sorted
+# first; workspace tasks with no assignment to any visible active project are
+# sorted last. A zero-task project receives one project-only row.
+_build_inventory() {
+    inventory_refresh_assignments=$1
+    _ensure_projects; _ensure_tasks
+    inventory_projects="$work_directory/inventory-projects.data"
+    inventory_rows="$work_directory/inventory-rows.data"
+    inventory_assigned="$work_directory/inventory-assigned.txt"
+    inventory_assigned_sorted="$work_directory/inventory-assigned-sorted.txt"
+    inventory_global_tasks="$work_directory/inventory-global-tasks.data"
+    inventory_new="$work_directory/inventory.txt"
+    : >"$inventory_rows"; : >"$inventory_assigned"
+
+    jq -r --arg sep "$separator" '
+        .projects[]
+        | [(.id | tostring),
+           ((.name // "" | tostring) | gsub("[\\t\\r\\n]"; " ") | gsub($sep; " ")),
+           ((.client.name // .client_name // .client_id // "-" | tostring)
+               | gsub("[\\t\\r\\n]"; " ") | gsub($sep; " ")),
+           ((.code // "-" | tostring) | gsub("[\\t\\r\\n]"; " ") | gsub($sep; " "))]
+        | join($sep)' "$projects_cache" >"$inventory_projects" ||
+        _err "cannot parse projects for combined inventory"
+
+    while IFS="$separator" read -r inventory_project_id inventory_project_name \
+        inventory_client_name inventory_project_code; do
+        [ -n "$inventory_project_id" ] || continue
+        _is_id "$inventory_project_id" ||
+            _err "invalid project id in Keito inventory: [$inventory_project_id]"
+        if [ "$inventory_refresh_assignments" -eq 1 ]; then
+            _refresh_project_tasks "$inventory_project_id"
+        else
+            _ensure_project_tasks "$inventory_project_id"
+        fi
+        inventory_project_tasks=$(_project_tasks_cache_path "$inventory_project_id")
+        inventory_project_task_count=$(jq -r '[.tasks[]] | length' "$inventory_project_tasks" |
+            awk '{ count += $1 } END { print count + 0 }') ||
+            _err "cannot count tasks for project [$inventory_project_id]"
+        if [ "$inventory_project_task_count" -eq 0 ]; then
+            inventory_empty_display="$trk_project_tag:$inventory_project_id | $inventory_client_name | $inventory_project_code | $inventory_project_name | Nessun Task"
+            printf '0%s%s%s%s%s%s\n' "$separator" "$inventory_project_name" \
+                "$separator" "" "$separator" "$inventory_empty_display" >>"$inventory_rows"
+            continue
+        fi
+        jq -r --arg sep "$separator" --arg project_id "$inventory_project_id" \
+            --arg project_name "$inventory_project_name" --arg client_name "$inventory_client_name" \
+            --arg project_code "$inventory_project_code" --arg project_tag "$trk_project_tag:" \
+            --arg task_tag "$trk_task_tag:" '
+            .tasks[]
+            | ((.name // "" | tostring) | gsub("[\\t\\r\\n]"; " ") | gsub($sep; " ")) as $task_name
+            | ["0", $project_name, $task_name,
+               ($project_tag + $project_id + " " + $task_tag + (.id | tostring) +
+                " | " + $client_name + " | " + $project_code +
+                " | " + $project_name + " | " + $task_name)]
+            | join($sep)' "$inventory_project_tasks" >>"$inventory_rows" ||
+            _err "cannot render tasks for project [$inventory_project_id]"
+        jq -r '.tasks[] | .id | tostring' "$inventory_project_tasks" >>"$inventory_assigned" ||
+            _err "cannot collect tasks for project [$inventory_project_id]"
+    done <"$inventory_projects"
+
+    LC_ALL=C sort -u "$inventory_assigned" >"$inventory_assigned_sorted"
+    jq -r --arg sep "$separator" '
+        .tasks[]
+        | [(.id | tostring),
+           ((.name // "" | tostring) | gsub("[\\t\\r\\n]"; " ") | gsub($sep; " "))]
+        | join($sep)' "$tasks_cache" >"$inventory_global_tasks" ||
+        _err "cannot parse global tasks for combined inventory"
+    awk -F"$separator" -v OFS="$separator" -v task_tag="$trk_task_tag:" '
+        FILENAME == ARGV[1] { assigned[$1] = 1; next }
+        !($1 in assigned) {
+            print "1", "Nessun Progetto", $2,
+                task_tag $1 " | - | - | Nessun Progetto | " $2
+        }' "$inventory_assigned_sorted" "$inventory_global_tasks" >>"$inventory_rows"
+
+    LC_ALL=C sort -t "$separator" -k1,1n -k2,2f -k3,3f "$inventory_rows" |
+        awk -F"$separator" '{ print $4 }' >"$inventory_new" ||
+        _err "cannot sort combined inventory"
+    mv "$inventory_new" "$inventory_cache" || _err "cannot update combined inventory cache"
+}
+
+_refresh_inventory() {
+    _refresh_projects; _refresh_tasks; _build_inventory 1
+}
+_ensure_inventory() { [ -f "$inventory_cache" ] || _build_inventory 0; }
+
+print_inventory() {
+    refresh_inventory=$1; shift; inventory_pattern=$*
+    _keito_setup
+    if [ -n "$refresh_inventory" ]; then _refresh_inventory; else _ensure_inventory; fi
+    if [ -n "$inventory_pattern" ]; then
+        grep -i -e "$inventory_pattern" "$inventory_cache"
+    else
+        cat "$inventory_cache"
+    fi
+}
+
 refresh_inventories() {
     [ "$#" -eq 0 ] || _err "refresh takes no arguments"
-    _keito_setup; _refresh_projects; _refresh_tasks
-    refreshed_project_task_sets=0
-    project_tasks_cache_directory="$account_cache_dir/project-tasks"
-    if [ -d "$project_tasks_cache_directory" ]; then
-        set +f
-        for cached_project_tasks in "$project_tasks_cache_directory"/*.jsonl; do
-            [ -f "$cached_project_tasks" ] || continue
-            cached_project_id=${cached_project_tasks##*/}
-            cached_project_id=${cached_project_id%.jsonl}
-            _is_id "$cached_project_id" || continue
-            _refresh_project_tasks "$cached_project_id"
-            refreshed_project_task_sets=$((refreshed_project_task_sets + 1))
-        done
-        set -f
-    fi
+    _keito_setup; _refresh_inventory
     project_count=$(jq -r '[.projects[]] | length' "$projects_cache" | awk '{ n += $1 } END { print n + 0 }')
     task_count=$(jq -r '[.tasks[]] | length' "$tasks_cache" | awk '{ n += $1 } END { print n + 0 }')
-    _info "inventories refreshed: $project_count project(s), $task_count global task(s), $refreshed_project_task_sets cached project task set(s)"
+    pair_count=$(grep -c -E '^\+kpid:[^ ]+ \+kid:' "$inventory_cache" || :)
+    unassigned_count=$(grep -c -E '^\+kid:' "$inventory_cache" || :)
+    _info "inventories refreshed: $project_count project(s), $task_count global task(s), $pair_count active association(s), $unassigned_count unassigned task(s)"
 }
 
 # --- normalisation ---------------------------------------------------------
@@ -880,6 +978,8 @@ main() {
         jj) print_projects refresh "$@" ;;
         t|tasks) print_tasks '' "$@" ;;
         tt) print_tasks refresh "$@" ;;
+        i|inventory) print_inventory '' "$@" ;;
+        ii) print_inventory refresh "$@" ;;
         refresh) refresh_inventories "$@" ;;
         a|add) add_time_entry "$@" ;;
         d|delete) delete_time_entry "$@" ;;

@@ -1,146 +1,614 @@
-#! /bin/sh
+#!/bin/sh
+
 version="0.1.0"
-dependencies="curl jq"
+required_trk_version="0.7.0"
+dependencies="base64 cksum curl jq trk"
+
+jira_base_url="${TRK_JIRA_BASE_URL:-}"
+jira_base_url=${jira_base_url%/}
+tempo_origin="${TRK_JIRA_TEMPO_URL:-https://api.tempo.io}"
+tempo_origin=${tempo_origin%/}
+tempo_api="$tempo_origin/4"
+
+trk_issue_tag="+jid"
+trk_billable_tag="+billable"
+worklog_marker="[trk-jira]"
+start_time="${TRK_JIRA_START_TIME:-09:00:00}"
+jira_jql="${TRK_JIRA_JQL:-assignee = currentUser() AND resolution = Unresolved ORDER BY updated DESC}"
+
 trkfile="${TRK_FILE:-$HOME/.trkfile}"
-trk_workday_hours="${TRK_WORKDAY_HOURS:-8}"
-editor="${EDITOR:-vi}"
-tmpdir="${TMPDIR:-/tmp}"
-logfile="$tmpdir/trk-jira.log"
-jira_trk_tag="#jid"
+cache_root="${TRK_JIRA_CACHE_DIR:-${XDG_CACHE_HOME:-$HOME/.cache}/trk-jira}"
+logfile="${TRK_JIRA_LOG:-$cache_root/trk-jira.log}"
+max_attempts="${TRK_JIRA_MAX_ATTEMPTS:-4}"
+connect_timeout="${TRK_JIRA_CONNECT_TIMEOUT:-10}"
+max_time="${TRK_JIRA_MAX_TIME:-120}"
+
+scriptname=${0##*/}
+separator=$(printf '\037')
+
+set -f
+umask 077
+LC_NUMERIC=C
+export LC_NUMERIC
+
+work_directory=
+assume_yes=0
+filter=
+filter_mode=auto
+filter_pattern=
+filter_selects_period=1
+range_from=
+range_to=
+jira_account_id=
 
 usage() {
-    s="$(basename $0)"
-    printf "Usage [v$version]:
-    $s l [grep_pattern | date_arg]
-        list time entries from jira, filtering records with grep_pattern or a date_arg if passed.
-        date_arg is any valid value the 'date' command can take, e.g. '-', 'today', 'yesterday', etc.
-        hours spent must be a number and can be decimal: 1, 4.25, 0.5, etc.
+    printf '%s\n' "Usage [v$version]:
+    $scriptname l [--grep|--date] [filter]
+        lists Tempo worklogs for the selected period
 
-    $s t
-    $s tt
-        get time-tracking enabled jira tasks assigned to your user
-        the task list is cached in your tmpdir, use 'tt' to force-refresh it
+    $scriptname j [pattern]       lists cached Jira issues
+    $scriptname jj [pattern]      refreshes and lists Jira issues
+    $scriptname refresh           refreshes the Jira issue inventory
 
-    $s a <date_arg> <hours> <issue_id> <notes>
-        adds a new worklog record to the jira issue.
+    $scriptname a [-b] <date> <hours> <issue_key_or_id> [notes]
+        adds one managed Tempo worklog
+    $scriptname d <tempo_worklog_id>
+        deletes one Tempo worklog by id
 
-    $s d <worklog_id>
-        deletes a worklog record from jira.
+    $scriptname p [--grep|--date] [filter]
+        shows the plan needed to mirror selected trk records to Tempo
+    $scriptname s [-y] [--grep|--date] [filter]
+        applies the plan; deletions require confirmation or -y
 
-    $s p [grep_pattern | date_arg]
-        output the changes that will be made on jira to align with trk entries
-        for the specified pattern/date_arg
-
-    $s s [grep_pattern | date_arg]
-        one way sync from trk to jira to align jira with trk entries
-        for the specified pattern/date_arg
-
-    $s h
+    $scriptname doctor
+        validates trk, Jira authentication, issue discovery and Tempo access
+    $scriptname h
         shows extended help
-"
+
+    Every command is also reachable as: trk jira <command>"
 }
+
+_secret_state() { [ -n "$1" ] && printf '%s' set || printf '%s' unset; }
+
 helpmsg() {
-    usage; echo
-    printf "filtering:
-    the l[ist], a[dd], p[lan] and s[ync] commands optionally take a grep pattern or a date arg as input.
-    the grep pattern is obviously grep-compatible a regex.
-    The date arg is a value that is a valid 'date' command 'DATE STRING': something like yesterday, 7 days ago, etc. 
-    $s tries to be smart, e.g.: if the date arg contains 'month' or 'week', then it adjust the resulting filter to grep the entire month/week.
+    usage
+    printf '\n%s\n' "Record mapping:
+    Only trk records carrying exactly one $trk_issue_tag tag are mirrored:
 
-task mapping:
-    WIP documentation
+        $trk_issue_tag:<issue-key-or-id>
 
-env vars:
-    - TRK_JIRA_BASEURL: set it to your jira base url [cur: ${TRK_JIRA_BASEURL:-jira.atlassian.com}]
-    - TRK_JIRA_USER: set it to your jira user [cur: ${TRK_JIRA_USER:-unset}]
-    - TRK_JIRA_TOKEN: set it to your jira access token [cur: ${TRK_JIRA_TOKEN:-unset}]
-"
+    Issue keys are resolved through Jira and Tempo receives the numeric issue
+    id. Every other +tag is stripped from the worklog description.
+
+    2026-09-01 1.5 $trk_billable_tag $trk_issue_tag:OPS-123 fix importer
+        -> OPS-123, 5400 seconds, billable, 'fix importer'
+
+Ownership:
+    Tempo worklogs do not expose arbitrary integration metadata. trk-jira
+    therefore reserves the exact description prefix '$worklog_marker'. New
+    worklogs are stored as '$worklog_marker <notes>'; the prefix is hidden when
+    listing and comparing entries. sync deletes only worklogs carrying it.
+    Do not add this prefix manually to unrelated Tempo worklogs.
+
+Mirroring:
+    trk is the source of truth. Date, seconds, Jira issue id and normalised
+    notes are compared as a multiset, so duplicate records remain duplicates.
+    Additions complete before deletions; if any POST fails, no DELETE runs.
+    POST is never retried automatically. Rerun sync to converge after checking.
+
+Filtering:
+    Date expressions select a period and permit additions and deletions. Grep
+    filters select trk records, so they compute additions only. No filter means
+    complete history. Non-interactive deletion requires -y or
+    TRK_JIRA_ASSUME_YES.
+
+Issue inventory:
+    j/jj print '+jid:KEY | PROJECT | PROJECT NAME | SUMMARY'. The default JQL is:
+
+        $jira_jql
+
+    Override TRK_JIRA_JQL when your workplace uses a different issue scope.
+
+Billable time:
+    $trk_billable_tag sets billableSeconds equal to timeSpentSeconds. Without
+    it, billableSeconds is omitted and Tempo applies its configured default.
+    Billable state is excluded from comparison because Tempo may derive it.
+
+Target:
+    Jira Cloud REST API v3 and Tempo REST API v4.
+
+Requirements:
+    trk >= $required_trk_version, plus: $dependencies
+
+Environment:
+    TRK_JIRA_BASE_URL        Jira Cloud URL [current: ${jira_base_url:-unset}]
+    TRK_JIRA_EMAIL           Jira account email [current: ${TRK_JIRA_EMAIL:-unset}]
+    TRK_JIRA_API_TOKEN       Jira API token [current: $(_secret_state "${TRK_JIRA_API_TOKEN:-}")]
+    TRK_JIRA_TEMPO_TOKEN     Tempo API token [current: $(_secret_state "${TRK_JIRA_TEMPO_TOKEN:-}")]
+    TRK_JIRA_ACCOUNT_ID      Jira account id; skips /myself [current: ${TRK_JIRA_ACCOUNT_ID:-unset}]
+    TRK_JIRA_TEMPO_URL       Tempo cluster URL [current: $tempo_origin]
+    TRK_JIRA_JQL             issue inventory JQL
+    TRK_JIRA_START_TIME      worklog start time [current: $start_time]
+    TRK_JIRA_ASSUME_YES      permit non-interactive deletions
+    TRK_JIRA_CACHE_DIR       cache directory [current: $cache_root]
+    TRK_JIRA_LOG             API log [current: $logfile]
+    TRK_JIRA_MAX_ATTEMPTS    attempts for safe requests [current: $max_attempts]
+    TRK_JIRA_CONNECT_TIMEOUT curl connect timeout [current: $connect_timeout]
+    TRK_JIRA_MAX_TIME        curl request timeout [current: $max_time]
+    TRK_DEBUG                diagnostics [current: ${TRK_DEBUG:-unset}]
+    TRK_FILE                 record file read by trk [current: $trkfile]
+    TRK_WORKDAY_HOURS, TRK_UNFRIENDLY
+                            honoured when formatting totals"
 }
-_now() { date '+%Y-%m-%dT%H:%M:%S'; }
-_err() { printf "%s: error: %s\n" "$(basename "$0")" "$1" >&2; exit 1; }
-_warn() { printf "%s: warn: %s\n" "$(basename "$0")" "$1" >&2; }
-_info() { printf "%s: %s\n" "$(basename "$0")" "$1" >&2; }
-_dbg() { [ "$TRK_DEBUG" ] && printf "%s %s: debug: %s\n" "$(_now)" "$(basename "$0")" "$1" >&2; return 0; }
-_today() { date '+%Y-%m-%d'; }
-_mktemp() { trk run _mktemp "$@"; }
-_validate_date() { trk run _validate_date "$@";}
-_validate_hours() { trk run _validate_hours "$@";}
-_calculate_grep_pattern() { trk run _calculate_grep_pattern "$@";}
 
-_urlencode () {
-  string=$@; format=; set --
-  while
-    literal=${string%%[!-._~0-9A-Za-z]*}
-    case "$literal" in
-      ?*) format=$format%s; set -- "$@" "$literal"; string=${string#$literal};;
-    esac
-    case "$string" in
-      "") false;;
-    esac
-  do
-    tail=${string#?}
-    head=${string%$tail}
-    format=$format%%%02x
-    set -- "$@" "'$head"
-    string=$tail
-  done
-  printf "$format\\n" "$@"
+_err() { printf '%s: error: %s\n' "$scriptname" "$1" >&2; exit 1; }
+_warn() { printf '%s: warn: %s\n' "$scriptname" "$1" >&2; }
+_info() { printf '%s: %s\n' "$scriptname" "$1" >&2; }
+_dbg() { [ -n "${TRK_DEBUG:-}" ] && printf '%s: debug: %s\n' "$scriptname" "$1" >&2; return 0; }
+_require() { command -v "$1" >/dev/null 2>&1 || _err "missing '$1' command"; }
+_check_dependencies() { for dependency in $dependencies; do _require "$dependency"; done; }
+
+_cleanup() { [ -n "$work_directory" ] && rm -rf "$work_directory"; return 0; }
+_setup_work_directory() {
+    work_directory=$(mktemp -d "${TMPDIR:-/tmp}/trk-jira.XXXXXX") || _err "cannot create a temporary directory"
+    trap '_cleanup' 0
+    trap '_cleanup; exit 130' HUP INT TERM
+}
+_confirm() {
+    [ "$assume_yes" -eq 1 ] && return 0
+    [ -n "${TRK_JIRA_ASSUME_YES:-}" ] && return 0
+    [ -t 0 ] || return 1
+    printf '%s: %s [y/N] ' "$scriptname" "$1" >&2
+    read -r confirm_answer </dev/tty || return 1
+    case $confirm_answer in y|Y|yes|YES) return 0 ;; esac
+    return 1
 }
 
-list_and_cache_timetrackable_issues() {
-    force_refresh="$1"
-    timetrackable_issues_cache_file="$tmpdir/trk-jira-timetrackable-issues-cache.json"
+# --- trk bridge ------------------------------------------------------------
 
-	jql="$(_urlencode "project in projectsWhereUserHasPermission('Work on issues') order by updatedDate DESC")"
-
-	{ [ -n "$force_refresh" ] || [ ! -r "$timetrackable_issues_cache_file" ]; } && 
-	# TODO handle pagination
-    curl -v --fail "https://$TRK_JIRA_BASEURL/rest/api/latest/search/jql?jql=$jql&fields=id,summary" \
-		--user "$TRK_JIRA_USER:$TRK_JIRA_TOKEN" > "$timetrackable_issues_cache_file"
-
-	# TODO do some sort of presentation (look at trk-harvest)
-    cat "$timetrackable_issues_cache_file" | jq
+_trk() { trk "$@" </dev/null; }
+_trk_run() { trk run "$@" </dev/null; }
+_check_trk_version() {
+    trk_version=$(_trk --version 2>/dev/null | awk 'NF { print $NF }')
+    [ -n "$trk_version" ] || _err "cannot read trk version; trk >= $required_trk_version is required"
+    awk -v found="$trk_version" -v wanted="$required_trk_version" '
+        BEGIN { nf=split(found,f,"."); nw=split(wanted,w,"."); n=nf>nw?nf:nw
+            for(i=1;i<=n;i++){ if(f[i]+0>w[i]+0)exit 0; if(f[i]+0<w[i]+0)exit 1 } }' ||
+        _err "trk $trk_version is too old; need trk >= $required_trk_version"
 }
-print_timetrackable_issue_list() { list_and_cache_timetrackable_issues; }
-print_timetrackable_issue_list_refresh() { list_and_cache_timetrackable_issues "refresh"; }
+_format_seconds() {
+    if [ -n "${TRK_UNFRIENDLY:-}" ]; then awk -v s="$1" 'BEGIN{printf "%.2f\n",s/3600}'; return; fi
+    _trk_run _friendly_seconds "$1" 2>/dev/null || awk -v s="$1" 'BEGIN{printf "%.2f\n",s/3600}'
+}
+_is_positive_integer() { case $1 in ''|*[!0-9]*) return 1 ;; esac; [ "$1" -gt 0 ]; }
+_valid_issue_ref() { printf '%s\n' "$1" | grep -Eq '^([A-Za-z][A-Za-z0-9_]*-[0-9]+|[0-9]+)$'; }
+_normalize_issue_ref() { case $1 in *[!0-9]*) printf '%s\n' "$1" | tr '[:lower:]' '[:upper:]' ;; *) printf '%s\n' "$1" ;; esac; }
+_urlencode() { jq -rn --arg value "$1" '$value | @uri'; }
+
+_validate_config() {
+    [ -n "$jira_base_url" ] || _err "set TRK_JIRA_BASE_URL"
+    case $jira_base_url in http://*|https://*) ;; *) _err "invalid TRK_JIRA_BASE_URL: [$jira_base_url]" ;; esac
+    case $tempo_origin in http://*|https://*) ;; *) _err "invalid TRK_JIRA_TEMPO_URL: [$tempo_origin]" ;; esac
+    case $start_time in [0-1][0-9]:[0-5][0-9]:[0-5][0-9]|2[0-3]:[0-5][0-9]:[0-5][0-9]) ;; *) _err "TRK_JIRA_START_TIME must be HH:MM:SS" ;; esac
+    _is_positive_integer "$max_attempts" || _err "TRK_JIRA_MAX_ATTEMPTS must be positive"
+    _is_positive_integer "$connect_timeout" || _err "TRK_JIRA_CONNECT_TIMEOUT must be positive"
+    _is_positive_integer "$max_time" || _err "TRK_JIRA_MAX_TIME must be positive"
+}
+_check_trkfile() {
+    [ -r "$trkfile" ] || _err "cannot read trk file: [$trkfile]"
+    check_log="$work_directory/trk-check.log"
+    if ! _trk check >/dev/null 2>"$check_log"; then cat "$check_log" >&2; _err "trk file validation failed; operation aborted"; fi
+}
+
+# --- filters ---------------------------------------------------------------
+
+_parse_filter() {
+    filter_mode=auto
+    while [ "$#" -gt 0 ]; do
+        case $1 in
+            -y|--yes) assume_yes=1; shift ;;
+            --grep) [ "$filter_mode" = auto ] || _err "use only one of --grep and --date"; filter_mode=grep; shift ;;
+            --date) [ "$filter_mode" = auto ] || _err "use only one of --grep and --date"; filter_mode=date; shift ;;
+            --) shift; break ;;
+            *) break ;;
+        esac
+    done
+    filter=$*
+    [ "$filter_mode" = auto ] || [ -n "$filter" ] || _err "$filter_mode filter requires a value"
+    filter_pattern=; filter_selects_period=1
+    if [ -n "$filter" ]; then
+        filter_pattern=$(_trk_run _calculate_filter_pattern "$filter" "$filter_mode") || _err "cannot compute filter for [$filter]"
+        case $filter_mode in date) filter_selects_period=1 ;; grep) filter_selects_period=0 ;;
+            auto) if _trk_run _validate_date "$filter"; then filter_selects_period=1; else filter_selects_period=0; fi ;; esac
+    fi
+}
+_date_range_from_pattern() {
+    range_pattern=$1; [ -n "$range_pattern" ] || return 1
+    if printf '%s\n' "$range_pattern" | grep -Eq '^\^[0-9]{4}-$'; then
+        y=$(printf '%s' "$range_pattern" | tr -dc '0-9'); printf '%s-01-01 %s-12-31\n' "$y" "$y"; return
+    fi
+    if printf '%s\n' "$range_pattern" | grep -Eq '^\^[0-9]{4}-[0-9]{2}-$'; then
+        m=$(printf '%s' "$range_pattern" | sed 's/^\^//;s/-$//'); start="$m-01"
+        end=$(date -d "$start + 1 month - 1 day" '+%Y-%m-%d') || return 1
+        printf '%s %s\n' "$start" "$end"; return
+    fi
+    if printf '%s\n' "$range_pattern" | grep -Eq '^\^[0-9]{4}-[0-9]{2}-[0-9]{2} $'; then
+        day=$(printf '%s' "$range_pattern" | sed 's/^\^//;s/ $//'); printf '%s %s\n' "$day" "$day"; return
+    fi
+    if printf '%s\n' "$range_pattern" | grep -Eq '^\^\\\([0-9]{4}-[0-9]{2}-[0-9]{2}(\\\|[0-9]{4}-[0-9]{2}-[0-9]{2})*\\\) $'; then
+        days=$(printf '%s' "$range_pattern" | grep -Eo '[0-9]{4}-[0-9]{2}-[0-9]{2}' | LC_ALL=C sort)
+        printf '%s %s\n' "$(printf '%s\n' "$days" | head -n1)" "$(printf '%s\n' "$days" | tail -n1)"; return
+    fi
+    return 1
+}
+_resolve_date_range() {
+    range_from=; range_to=; [ "$filter_selects_period" -eq 1 ] || return; [ -n "$filter_pattern" ] || return
+    resolved=$(_date_range_from_pattern "$filter_pattern") || _err "cannot derive a safe Tempo date range from [$filter]"
+    range_from=${resolved%% *}; range_to=${resolved##* }
+}
+
+# --- HTTP and authentication ---------------------------------------------
+
+_api_setup() {
+    jira_email=${TRK_JIRA_EMAIL:-}; jira_token=${TRK_JIRA_API_TOKEN:-}; tempo_token=${TRK_JIRA_TEMPO_TOKEN:-}
+    [ -n "$jira_email" ] || _err "set TRK_JIRA_EMAIL"
+    [ -n "$jira_token" ] || _err "set TRK_JIRA_API_TOKEN"
+    [ -n "$tempo_token" ] || _err "set TRK_JIRA_TEMPO_TOKEN"
+    case $tempo_token in *'"'*|*'
+'*) _err "Tempo token contains invalid characters" ;; esac
+    cache_scope=$(printf '%s\n%s\n' "$jira_base_url" "$jira_email" | cksum | awk '{print $1}')
+    cache_dir="$cache_root/accounts/$cache_scope"; issues_cache="$cache_dir/issues.jsonl"; issue_map_cache="$cache_dir/issues.data"
+    mkdir -p "$cache_dir" || _err "cannot create cache directory: [$cache_dir]"
+    log_directory=${logfile%/*}; [ "$log_directory" = "$logfile" ] && log_directory=.
+    mkdir -p "$log_directory" || _err "cannot create log directory: [$log_directory]"
+    : >>"$logfile" || _err "cannot write API log: [$logfile]"
+    jira_basic=$(printf '%s:%s' "$jira_email" "$jira_token" | base64 | tr -d '\n')
+    jira_curl_config="$work_directory/jira-curl.conf"; tempo_curl_config="$work_directory/tempo-curl.conf"
+    { printf 'silent\nshow-error\n'; printf 'connect-timeout = %s\nmax-time = %s\n' "$connect_timeout" "$max_time"
+      printf 'header = "Accept: application/json"\nheader = "Authorization: Basic %s"\nheader = "User-Agent: trk-jira/%s"\n' "$jira_basic" "$version"; } >"$jira_curl_config" || _err "cannot write Jira curl configuration"
+    { printf 'silent\nshow-error\n'; printf 'connect-timeout = %s\nmax-time = %s\n' "$connect_timeout" "$max_time"
+      printf 'header = "Accept: application/json"\nheader = "Authorization: Bearer %s"\nheader = "User-Agent: trk-jira/%s"\n' "$tempo_token" "$version"; } >"$tempo_curl_config" || _err "cannot write Tempo curl configuration"
+    response_body="$work_directory/response.json"; response_headers="$work_directory/response.headers"
+}
+_error_message() {
+    jq -r '[(.errorMessages[]? // empty),(.errors[]? // empty),(.message? // empty),(.error? // empty)]
+        |map(select(.!=null and .!=""))
+        |if length==0 then "no error description" else .[0] end' "$response_body" 2>/dev/null || printf '%s\n' 'unreadable response'
+}
+_retry_delay() {
+    d=$(awk 'tolower($1)=="retry-after:"{gsub("\\r","",$2);print $2;exit}' "$response_headers")
+    case $d in ''|*[!0-9]*) printf '%s\n' "$1" ;; *) printf '%s\n' "$d" ;; esac
+}
+_http_request() {
+    svc=$1; cfg=$2; method=$3; url=$4; payload=$5; retryable=$6; attempt=1; backoff=1
+    while :; do
+        : >"$response_body"; : >"$response_headers"
+        set -- --config "$cfg" --request "$method" --output "$response_body" --dump-header "$response_headers" --write-out '%{http_code}'
+        [ -z "$payload" ] || set -- "$@" --header 'Content-Type: application/json' --data-binary "@$payload"
+        http_status=$(curl "$@" "$url" 2>>"$logfile") || http_status=000
+        printf '%s %s %s %s -> %s\n' "$(date '+%Y-%m-%dT%H:%M:%S')" "$svc" "$method" "$url" "$http_status" >>"$logfile"
+        _dbg "$svc $method $url -> $http_status"
+        case $http_status in 2*) return 0 ;; 408|429|500|502|503|504|000)
+            if [ "$retryable" -eq 0 ] || [ "$attempt" -ge "$max_attempts" ]; then return 1; fi
+            delay=$(_retry_delay "$backoff"); _warn "$svc returned $http_status; retrying in ${delay}s"; sleep "$delay"
+            backoff=$((backoff*2)); attempt=$((attempt+1)) ;; *) return 1 ;; esac
+    done
+}
+_jira_get() { _http_request Jira "$jira_curl_config" GET "$1" "" 1; }
+_tempo_get() { _http_request Tempo "$tempo_curl_config" GET "$1" "" 1; }
+_resolve_account() {
+    if [ -n "${TRK_JIRA_ACCOUNT_ID:-}" ]; then jira_account_id=$TRK_JIRA_ACCOUNT_ID
+    else _jira_get "$jira_base_url/rest/api/3/myself" || _err "cannot read Jira /myself ($http_status): $(_error_message)"
+        jira_account_id=$(jq -r '.accountId//empty' "$response_body"); fi
+    [ -n "$jira_account_id" ] || _err "invalid Jira account id"
+    printf '%s' "$jira_account_id" | grep -q '[[:cntrl:]]' && _err "invalid Jira account id"
+}
+
+# --- Jira issues -----------------------------------------------------------
+
+_build_issue_map() {
+    map_input=$1; map_output=$2; map_unsorted="$work_directory/issues-unsorted.data"
+    jq -r --arg sep "$separator" '
+        .issues[] | (.key//""|tostring) as $key
+        | [$key,$key,(.id//""|tostring),(.fields.project.key//"-"|tostring),
+           ((.fields.project.name//"-"|tostring)|gsub("[\\t\\r\\n]";" ")|gsub($sep;" ")),
+           ((.fields.summary//""|tostring)|gsub("[\\t\\r\\n]";" ")|gsub($sep;" "))]
+        | join($sep)' "$map_input" >"$map_unsorted" || _err "cannot normalise Jira issues"
+    LC_ALL=C sort -t "$separator" -k1,1 -u "$map_unsorted" >"$map_output"
+}
+
+_refresh_issues() {
+    issues_new="$work_directory/issues.jsonl"; map_new="$work_directory/issues.data"; : >"$issues_new"
+    next_token=
+    while :; do
+        payload="$work_directory/jira-search.json"
+        jq -n --arg jql "$jira_jql" --arg token "$next_token" '
+            {jql:$jql,maxResults:100,fields:["summary","project"]}
+            +(if $token=="" then {} else {nextPageToken:$token} end)' >"$payload" || _err "cannot build Jira search request"
+        _http_request Jira "$jira_curl_config" POST "$jira_base_url/rest/api/3/search/jql" "$payload" 1 ||
+            _err "Jira issue search failed ($http_status): $(_error_message)"
+        jq -e '.issues|arrays' "$response_body" >/dev/null || _err "unexpected Jira search response"
+        cat "$response_body" >>"$issues_new"; printf '\n' >>"$issues_new"
+        is_last=$(jq -r '.isLast//false' "$response_body"); next_token=$(jq -r '.nextPageToken//empty' "$response_body")
+        [ "$is_last" = true ] && break
+        [ -n "$next_token" ] || _err "Jira search pagination omitted nextPageToken"
+    done
+    _build_issue_map "$issues_new" "$map_new"
+    mv "$issues_new" "$issues_cache" || _err "cannot update Jira issue cache"
+    mv "$map_new" "$issue_map_cache" || _err "cannot update Jira issue map"
+}
+_ensure_issues() { [ -f "$issues_cache" ] && [ -f "$issue_map_cache" ] || _refresh_issues; }
+_issue_cached() {
+    lookup=$1; [ -f "$issue_map_cache" ] || return 1
+    awk -F"$separator" -v issue="$lookup" '$1==issue||$2==issue||$3==issue{found=1;exit} END{exit !found}' "$issue_map_cache"
+}
+_resolve_issue() {
+    ref=$(_normalize_issue_ref "$1"); _valid_issue_ref "$ref" || _err "invalid Jira issue key or id: [$1]"
+    _issue_cached "$ref" && return
+    _jira_get "$jira_base_url/rest/api/3/issue/$ref?fields=summary,project" ||
+        _err "cannot resolve Jira issue [$ref] ($http_status): $(_error_message)"
+    key=$(jq -r '.key//empty' "$response_body"); id=$(jq -r '.id//empty' "$response_body")
+    _valid_issue_ref "$key" || _err "invalid issue key in Jira response for [$ref]"
+    _is_positive_integer "$id" || _err "invalid issue id in Jira response for [$ref]"
+    jq -r --arg sep "$separator" --arg lookup "$ref" '
+        [$lookup,(.key|tostring),(.id|tostring),(.fields.project.key//"-"|tostring),
+         ((.fields.project.name//"-"|tostring)|gsub("[\\t\\r\\n]";" ")|gsub($sep;" ")),
+         ((.fields.summary//""|tostring)|gsub("[\\t\\r\\n]";" ")|gsub($sep;" "))]
+        |join($sep)' "$response_body" >>"$issue_map_cache" || _err "cannot cache Jira issue [$ref]"
+}
+print_issues() {
+    refresh=$1; shift; pattern=$*; _api_setup
+    [ -z "$refresh" ] || _refresh_issues; _ensure_issues
+    display="$work_directory/issues.txt"
+    awk -F"$separator" -v tag="$trk_issue_tag:" '{print tag $2 " | " $4 " | " $5 " | " $6}' "$issue_map_cache" |
+        LC_ALL=C sort -u >"$display"
+    if [ -n "$pattern" ]; then grep -i -e "$pattern" "$display"; else cat "$display"; fi
+}
+refresh_issues() {
+    [ "$#" -eq 0 ] || _err "refresh takes no arguments"
+    _api_setup; _refresh_issues; count=$(wc -l <"$issue_map_cache" | tr -d ' ')
+    _info "Jira inventory refreshed: $count issue(s)"
+}
+
+# --- trk normalisation -----------------------------------------------------
+
+_normalization_awk='
+    function is_tag(w){return w~/^\+[[:alnum:]_][[:alnum:]_-]*(:[[:alnum:]_][[:alnum:]_-]*)?$/}
+    function normalise(s,p,n,i,r){n=split(s,p,/[ \t]+/);r="";for(i=1;i<=n;i++)if(p[i]!="")r=r==""?p[i]:r " " p[i];return r}'
+
+# Output: day seconds issue-ref notes billable
+_trk_entries_unresolved() {
+    unresolved_output=$1; unresolved_filter=$2; unresolved_raw="$work_directory/trk-records.txt"
+    if [ -n "$unresolved_filter" ]; then _trk l --grep "$unresolved_filter" >"$unresolved_raw"; trk_list_status=$?; [ "$trk_list_status" -le 1 ] || _err "cannot list filtered trk records"
+    else _trk l >"$unresolved_raw" || _err "cannot list trk records"; fi
+    awk -v OFS="$separator" -v sep="$separator" -v marker="$trk_issue_tag" -v billable_marker="$trk_billable_tag" -v program="$scriptname" \
+        "$_normalization_awk"'
+        function valid_ref(v){return v~/^([[:alpha:]][[:alnum:]_]*-[0-9]+|[0-9]+)$/}
+        { day=$1;seconds=int(($2+0)*3600+0.5);issue="";notes="";billable="false";count=0
+          for(f=3;f<=NF;f++){
+            if($f==marker||index($f,marker ":")==1){count++;issue=$f==marker?"":substr($f,length(marker)+2);continue}
+            if($f==billable_marker){billable="true";continue}
+            if(is_tag($f))continue
+            notes=notes==""?$f:notes " " $f
+          }
+          if(count==0)next
+          if(count!=1||!valid_ref(issue)||seconds<1){printf "%s: error: invalid Jira mapping: %s\n",program,$0>"/dev/stderr";bad++;next}
+          if(issue!~/^[0-9]+$/)issue=toupper(issue);notes=normalise(notes);gsub(sep," ",notes)
+          print day,seconds,issue,notes,billable
+        }
+        END{if(bad)exit 1}' "$unresolved_raw" >"$unresolved_output" || _err "one or more trk records have an invalid Jira mapping"
+}
+
+# Output: day seconds issue-id issue-key notes billable
+_resolve_trk_entries() {
+    resolved_input=$1; resolved_output=$2; resolved_refs="$work_directory/issue-refs.txt"
+    [ -f "$issue_map_cache" ] || : >"$issue_map_cache"
+    awk -F"$separator" '{print $3}' "$resolved_input" | LC_ALL=C sort -u >"$resolved_refs"
+    while IFS= read -r resolved_ref; do [ -n "$resolved_ref" ] && _resolve_issue "$resolved_ref"; done <"$resolved_refs"
+    awk -F"$separator" -v OFS="$separator" -v map="$issue_map_cache" -v program="$scriptname" '
+        BEGIN{while((getline line<map)>0){split(line,p,FS);id[p[1]]=p[3];key[p[1]]=p[2];id[p[2]]=p[3];key[p[2]]=p[2];id[p[3]]=p[3];key[p[3]]=p[2]}close(map)}
+        {if(!($3 in id)){printf "%s: error: unresolved Jira issue: %s\n",program,$3>"/dev/stderr";bad++;next}
+         print $1,$2,id[$3],key[$3],$4,$5}
+        END{if(bad)exit 1}' "$resolved_input" >"$resolved_output" || _err "cannot resolve one or more Jira issues"
+}
+_trk_entries_machine() {
+    machine_output=$1; machine_filter=$2; machine_unresolved="$work_directory/trk-unresolved.data"
+    _trk_entries_unresolved "$machine_unresolved" "$machine_filter"
+    _resolve_trk_entries "$machine_unresolved" "$machine_output"
+}
+
+# --- Tempo worklogs --------------------------------------------------------
+
+_tempo_get_all() {
+    page_url=$1
+    while [ -n "$page_url" ]; do
+        _tempo_get "$page_url" || _err "Tempo GET failed ($http_status): $(_error_message)"
+        jq -e '.results|arrays' "$response_body" >/dev/null || _err "unexpected Tempo pagination response"
+        cat "$response_body"; printf '\n'
+        next=$(jq -r '.metadata.next//empty' "$response_body")
+        case $next in '') page_url= ;; /*) page_url="$tempo_origin$next" ;;
+            "$tempo_origin"/*) page_url=$next ;; http://*|https://*) _err "refusing cross-origin Tempo pagination link: [$next]" ;;
+            *) page_url="$tempo_origin/$next" ;; esac
+    done
+}
+
+# Output: day seconds worklog-id issue-id author owned notes
+_tempo_worklogs_machine() {
+    tempo_machine_output=$1; [ -n "$jira_account_id" ] || _resolve_account
+    tempo_account_encoded=$(_urlencode "$jira_account_id"); tempo_list_url="$tempo_api/worklogs/user/$tempo_account_encoded?limit=1000"
+    [ -n "$range_from" ] && tempo_list_url="$tempo_list_url&from=$range_from"; [ -n "$range_to" ] && tempo_list_url="$tempo_list_url&to=$range_to"
+    tempo_list_raw="$work_directory/tempo-worklogs.jsonl"; _tempo_get_all "$tempo_list_url" >"$tempo_list_raw"
+    jq -r --arg sep "$separator" --arg marker "$worklog_marker" --arg author "$jira_account_id" --arg from "$range_from" --arg to "$range_to" '
+        .results[]
+        | select((.author.accountId//"") == $author)
+        | select(($from=="" or ((.startDate//"") >= $from)) and ($to=="" or ((.startDate//"") <= $to)))
+        | (.description//""|tostring) as $d
+        | (($d==$marker) or ($d|startswith($marker+" "))) as $owned
+        | (if $owned then if $d==$marker then "" else $d[(($marker|length)+1):] end else $d end
+           |gsub("[\\t\\r\\n]";" ")|gsub($sep;" ")) as $notes
+        | (.issue.id//(try((.issue.self//"")|capture("(?<id>[0-9]+)$").id)catch "")) as $iid
+        | [(.startDate//""|tostring),(.timeSpentSeconds//""|tostring),(.tempoWorklogId//""|tostring),
+           ($iid|tostring),(.author.accountId//""|tostring),($owned|tostring),$notes]|join($sep)' "$tempo_list_raw" >"$tempo_machine_output" ||
+        _err "cannot normalise Tempo worklogs"
+}
+_tempo_add_worklog() {
+    day=$1; seconds=$2; issue_id=$3; notes=$4; billable=$5
+    if [ -n "$notes" ]; then description="$worklog_marker $notes"; else description=$worklog_marker; fi
+    payload="$work_directory/tempo-add.json"
+    jq -n --argjson iid "$issue_id" --argjson seconds "$seconds" --arg author "$jira_account_id" \
+        --arg day "$day" --arg time "$start_time" --arg description "$description" --argjson billable "$billable" '
+        {issueId:$iid,timeSpentSeconds:$seconds,authorAccountId:$author,startDate:$day,startTime:$time,description:$description}
+        +(if $billable then {billableSeconds:$seconds} else {} end)' >"$payload" || _err "cannot build Tempo worklog payload"
+    _http_request Tempo "$tempo_curl_config" POST "$tempo_api/worklogs" "$payload" 0 && return
+    api_last_error=$(_error_message); return 1
+}
+_tempo_delete_worklog() {
+    _http_request Tempo "$tempo_curl_config" DELETE "$tempo_api/worklogs/$1" "" 1 && return
+    [ "$http_status" = 404 ] && return
+    api_last_error=$(_error_message); return 1
+}
+
+# Input: day seconds worklog-id issue-id author owned notes
+# Output: day seconds issue-id notes worklog-id owned
+_tempo_entries_key_machine() {
+    keyed_input=$1; keyed_output=$2
+    awk -F"$separator" -v OFS="$separator" -v program="$scriptname" '
+        function date(v){return v~/^[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]$/}
+        function positive(v){return v~/^[0-9]+$/&&v+0>0}
+        {if(NF!=7||!date($1)||!positive($2)||!positive($3)||!positive($4)||($6!="true"&&$6!="false")){
+            printf "%s: error: malformed Tempo worklog: %s\n",program,$0>"/dev/stderr";bad++;next}
+         print $1,$2,$4,$7,$3,$6}
+        END{if(bad)exit 1}' "$keyed_input" >"$keyed_output" || _err "cannot safely normalise Tempo worklogs"
+}
+
+# --- plan and sync ---------------------------------------------------------
+
+# Plan: op day seconds issue-id issue-key worklog-id notes billable ownership
+_build_plan() {
+    plan_output=$1; _check_trkfile
+    local_selected="$work_directory/local-selected.data"; local_scope="$work_directory/local-scope.data"
+    _trk_entries_machine "$local_selected" "$filter_pattern"
+    if [ "$filter_selects_period" -eq 1 ]; then cp "$local_selected" "$local_scope"; else : >"$local_scope"; fi
+    tempo_raw="$work_directory/tempo-raw.data"; tempo_keyed="$work_directory/tempo-keyed.data"
+    _tempo_worklogs_machine "$tempo_raw"; _tempo_entries_key_machine "$tempo_raw" "$tempo_keyed"
+    unmanaged_file="$work_directory/unmanaged.count"; : >"$unmanaged_file"
+    {
+        awk -F"$separator" -v OFS="$separator" -v remote="$tempo_keyed" '
+            BEGIN{while((getline line<remote)>0){split(line,p,FS);available[p[1] FS p[2] FS p[3] FS p[4]]++}close(remote)}
+            {k=$1 FS $2 FS $3 FS $5
+             if(used[k]<available[k]){used[k]++;print "=",$1,$2,$3,$4,"-",$5,$6,"-"}
+             else print "+",$1,$2,$3,$4,"-",$5,$6,"-"}' "$local_selected"
+        if [ "$filter_selects_period" -eq 1 ]; then
+            awk -F"$separator" -v OFS="$separator" -v local="$local_scope" -v unmanaged="$unmanaged_file" '
+                BEGIN{while((getline line<local)>0){split(line,p,FS);available[p[1] FS p[2] FS p[3] FS p[5]]++}close(local)}
+                {k=$1 FS $2 FS $3 FS $4
+                 if(used[k]<available[k]){used[k]++;next}
+                 if($6!="true"){unowned++;next}
+                 print "-",$1,$2,$3,"-",$5,$4,"-","managed"}
+                END{printf "%d\n",unowned+0>unmanaged}' "$tempo_keyed"
+        fi
+    } | LC_ALL=C sort -t "$separator" -k2,2 -k1,1 -k3,3 >"$plan_output"
+    unmanaged_count=$(cat "$unmanaged_file" 2>/dev/null || printf 0)
+    [ "$unmanaged_count" -eq 0 ] || _info "left alone: $unmanaged_count unmatched unmanaged Tempo worklog(s)"
+    [ "$filter_selects_period" -eq 1 ] || _warn "grep filter: additions only; deletions skipped"
+}
+_print_plan() {
+    awk -F"$separator" '{symbol=$1=="="?"\342\234\223":$1;issue=$5!="-"?"+jid:"$5:"+jid:"$4
+        line=sprintf("%s %s %.2f %s",symbol,$2,$3/3600,issue)
+        if($6!="-")line=line " wid:"$6;if($8=="true")line=line " billable";if($7!="")line=line " "$7;print line}' "$1"
+}
+plan() {
+    _parse_filter "$@"; _resolve_date_range; _api_setup; _resolve_account
+    file="$work_directory/plan.data"; _build_plan "$file"
+    _info "plan:"; _print_plan "$file" | grep -e '^✓' || :; printf '\n'; _print_plan "$file" | grep -v -e '^✓' || :
+}
+sync() {
+    _parse_filter "$@"; _resolve_date_range; _api_setup; _resolve_account
+    file="$work_directory/plan.data"; _build_plan "$file"; pending="$work_directory/pending.data"
+    grep -v -e "^=$separator" "$file" >"$pending" || :
+    if [ ! -s "$pending" ]; then _info "nothing to sync"; return; fi
+    _print_plan "$pending"; printf '\n'; deletions=$(grep -c -e "^-$separator" "$pending" || :)
+    if [ "$deletions" -gt 0 ]; then _confirm "$deletions managed Tempo worklog(s) will be deleted, continue?" ||
+        _err "deletion not authorised; rerun interactively or pass -y"; fi
+    _info "syncing additions..."; added=0; failed=0
+    while IFS="$separator" read -r op day seconds issue_id issue_key worklog_id notes billable ownership; do
+        [ "$op" = + ] || continue
+        if _tempo_add_worklog "$day" "$seconds" "$issue_id" "$notes" "$billable"; then
+            added=$((added+1)); _info "added: $day $(_format_seconds "$seconds") +jid:$issue_key $notes"
+        else failed=$((failed+1)); _warn "cannot add ($http_status): $day +jid:$issue_key - $api_last_error"; fi
+    done <"$pending"
+    if [ "$failed" -gt 0 ]; then _warn "$failed addition(s) failed; no deletion attempted"; _warn "rerun sync after checking: $logfile"; return 1; fi
+    _info "syncing deletions..."; deleted=0; delete_failed=0
+    while IFS="$separator" read -r op day seconds issue_id issue_key worklog_id notes billable ownership; do
+        [ "$op" = - ] || continue
+        if _tempo_delete_worklog "$worklog_id"; then deleted=$((deleted+1)); _info "deleted: wid:$worklog_id $day $(_format_seconds "$seconds") $notes"
+        else delete_failed=$((delete_failed+1)); _warn "cannot delete wid:$worklog_id ($http_status): $api_last_error"; fi
+    done <"$pending"
+    _info "sync complete: $added added, $deleted deleted, $delete_failed failed"
+    [ "$delete_failed" -eq 0 ] || { _warn "rerun sync after checking: $logfile"; return 1; }
+}
+
+# --- direct commands -------------------------------------------------------
 
 list_worklogs() {
-	echo todo
+    _parse_filter "$@"; _resolve_date_range; _api_setup; _resolve_account
+    worklogs="$work_directory/list-worklogs.data"; _tempo_worklogs_machine "$worklogs"
+    candidates="$work_directory/list-candidates.data"
+    awk -F"$separator" -v OFS="$separator" '{line=sprintf("%s %.2f wid:%s +jid:%s",$1,$2/3600,$3,$4)
+        if($6=="true")line=line " managed";if($7!="")line=line " "$7;print $2,line}' "$worklogs" >"$candidates"
+    selected="$work_directory/list-selected.data"
+    if [ "$filter_selects_period" -eq 0 ] && [ -n "$filter_pattern" ]; then grep -e "$filter_pattern" "$candidates" >"$selected" || :
+    else cp "$candidates" "$selected"; fi
+    LC_ALL=C sort -t "$separator" -k2,2 "$selected" | awk -F"$separator" '{print substr($0,index($0,FS)+1)}'
+    total=$(awk -F"$separator" '{n+=$1}END{printf "%.0f\n",n+0}' "$selected")
+    printf '\n'; printf 'tot: %s\n' "$(_format_seconds "$total")"
 }
 
 add_worklog() {
-	echo todo
+    billable=false
+    while [ "$#" -gt 0 ]; do case $1 in -b|--billable) billable=true; shift ;; --) shift; break ;; *) break ;; esac; done
+    [ "$#" -ge 3 ] || { usage >&2; exit 1; }
+    day=$1; hours=$2; issue=$3; shift 3; notes=$*
+    _trk_run _validate_date "$day" || _err "invalid date: [$day]"; day=$(date -d "$day" '+%Y-%m-%d') || _err "cannot normalise date"
+    _trk_run _validate_hours "$hours" || _err "invalid hours: [$hours]"
+    seconds=$(awk -v h="$hours" 'BEGIN{printf "%.0f\n",h*3600}'); _is_positive_integer "$seconds" || _err "hours must be greater than zero"
+    issue=$(_normalize_issue_ref "$issue"); _valid_issue_ref "$issue" || _err "invalid Jira issue key or id: [$issue]"
+    _api_setup; _resolve_account; _resolve_issue "$issue"
+    issue_id=$(awk -F"$separator" -v i="$issue" '$1==i||$2==i||$3==i{print $3;exit}' "$issue_map_cache")
+    issue_key=$(awk -F"$separator" -v i="$issue" '$1==i||$2==i||$3==i{print $2;exit}' "$issue_map_cache")
+    _tempo_add_worklog "$day" "$seconds" "$issue_id" "$notes" "$billable" || _err "cannot add Tempo worklog ($http_status): $api_last_error"
+    _info "worklog added: $day $(_format_seconds "$seconds") +jid:$issue_key $notes"
 }
-
 delete_worklog() {
-	echo todo
+    [ "$#" -eq 1 ] || _err "delete requires exactly one Tempo worklog id"
+    _is_positive_integer "$1" || _err "invalid Tempo worklog id: [$1]"
+    _api_setup; _tempo_delete_worklog "$1" || _err "cannot delete Tempo worklog [$1] ($http_status): $api_last_error"
+    _info "worklog deleted: $1"
+}
+doctor() {
+    [ "$#" -eq 0 ] || _err "doctor takes no arguments"
+    _check_trkfile; _api_setup; _resolve_account; _refresh_issues
+    unresolved="$work_directory/doctor-unresolved.data"; resolved="$work_directory/doctor-resolved.data"
+    _trk_entries_unresolved "$unresolved" ""; _resolve_trk_entries "$unresolved" "$resolved"
+    range_from=$(date '+%Y-%m-%d'); range_to=$range_from; remote="$work_directory/doctor-worklogs.data"; _tempo_worklogs_machine "$remote"
+    issue_count=$(wc -l <"$issue_map_cache" | tr -d ' ')
+    mapping_count=$(awk -F"$separator" '{seen[$3]=1}END{for(k in seen)n++;print n+0}' "$resolved")
+    _info "trk $trk_version: valid"; _info "Jira authentication: account $jira_account_id"
+    _info "Jira inventory: $issue_count issue(s)"; _info "trk mappings: $mapping_count issue(s) resolved"
+    _info "Tempo API: accessible"; _info "doctor: ok"
 }
 
-plan() {
-	echo todo
-}
-
-sync() {
-	echo todo
-}
-_check_dependencies() {
-    missing=''; for d in $dependencies; do _dbg "checking dep [$d]"; command -v "$d">/dev/null; [ $? -ne 0 ] && missing="$missing $d"; done
-    [ -n "$missing" ] && echo "missing dependencies: $missing" >&2 && exit 1
-}
 main() {
-    _check_dependencies
-    cmd="$1"; shift
-    case $cmd in
-        t) print_timetrackable_issue_list "$@";;
-        tt) print_timetrackable_issue_list_refresh "$@";;
-        l) list_worklogs "$@";;
-        a) add_worklog "$@";;
-        d) delete_worklog "$@";;
-        p) plan "$@";;
-        s) sync "$@";;
-        h) helpmsg && exit 0;;
-        run) "$@";;
+    [ "$#" -gt 0 ] || { usage; exit; }
+    case $1 in h|help|-h|--help) helpmsg; exit ;; -v|--version) printf '%s %s\n' "$scriptname" "$version"; exit ;; esac
+    _check_dependencies; _check_trk_version; _validate_config; _setup_work_directory
+    command_name=$1; shift
+    case $command_name in
+        l|list) list_worklogs "$@" ;; j|issues) print_issues '' "$@" ;; jj) print_issues refresh "$@" ;;
+        refresh) refresh_issues "$@" ;; a|add) add_worklog "$@" ;; d|delete) delete_worklog "$@" ;;
+        p|plan) plan "$@" ;; s|sync) sync "$@" ;; doctor) doctor "$@" ;;
+        *) usage >&2; _err "unknown command: [$command_name]" ;;
     esac
 }
-scriptname=$(basename $0)
-[ "$1" ] || { usage; exit 0; } && main "$@"
+
+main "$@"
