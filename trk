@@ -1,6 +1,6 @@
 #!/bin/sh
 
-version="0.7.0"
+version="0.8.0"
 trkfile="${TRK_FILE:-$HOME/.trkfile}"
 trk_workday_hours="${TRK_WORKDAY_HOURS:-8}"
 editor="${VISUAL:-${EDITOR:-vi}}"
@@ -37,7 +37,12 @@ usage() {
         reports total time, chargeability and per-tag totals
         input defaults to TRK_FILE; a real pipe/redirection is detected automatically
     $scriptname check [--stdin]
-        validates records and tags
+        validates records, tags and meta-tag mappings
+
+    $scriptname maps [++meta-tag]
+        lists all mappings or one mapping
+    $scriptname materialize [--dry-run]
+        replaces meta-tags with their current expansion
 
     $scriptname e
         edits the trk file with VISUAL or EDITOR
@@ -65,6 +70,16 @@ Tags:
     +billable is used to calculate chargeability. The old #tag syntax is not
     accepted; # at the beginning of a line remains the comment marker.
 
+Meta-tags:
+    A meta-tag such as ++ace expands to normal tags. Mappings are comments in
+    the trk file and cannot contain other meta-tags:
+
+    # map: ++ace +project +client:finomnia +billable
+
+    Expansion happens before filtering, listing and reporting. Records keep
+    their compact form in the file. Use materialize to freeze their current
+    meaning by replacing meta-tags with their expansion.
+
 Filtering:
     Without options, a valid GNU date expression is converted to a date filter;
     any other value is treated as a basic grep regular expression.
@@ -80,6 +95,8 @@ Examples:
     $scriptname l --grep '+client:acme.*+project:web'
     $scriptname l 'this month' | $scriptname r
     $scriptname r --stdin '+billable' < exported-records
+    $scriptname maps ++ace
+    $scriptname materialize --dry-run
     $scriptname check
 
 Environment:
@@ -87,7 +104,7 @@ Environment:
     TRK_FILE           record file [current: $trkfile]
     TRK_WORKDAY_HOURS  hours represented by one friendly-format day [current: $trk_workday_hours]
     TRK_UNFRIENDLY     output report times as decimal hours with two decimals
-    TRK_TAGS           tags prepended once to newly added records or timers
+    TRK_TAGS           tags or meta-tags prepended to new records and timers
     VISUAL, EDITOR     editor command [current: $editor]"
 }
 
@@ -144,9 +161,21 @@ _validate_tag() {
         grep -Eq '^\+[[:alnum:]_][[:alnum:]_-]*(:[[:alnum:]_][[:alnum:]_-]*)?$'
 }
 
+_validate_meta_tag() {
+    printf '%s\n' "$1" |
+        grep -Eq '^\+\+[[:alnum:]_][[:alnum:]_-]*$'
+}
+
+_validate_tag_token() {
+    case $1 in
+        ++*) _validate_meta_tag "$1" ;;
+        *) _validate_tag "$1" ;;
+    esac
+}
+
 _validate_env_tags() {
     for tag_word in ${TRK_TAGS:-}; do
-        _validate_tag "$tag_word" ||
+        _validate_tag_token "$tag_word" ||
             _err "TRK_TAGS contains an invalid tag: [$tag_word]"
     done
 }
@@ -155,7 +184,7 @@ _validate_description_tags() {
     description_to_check=$1
     for tag_word in $description_to_check; do
         case $tag_word in
-            +*) _validate_tag "$tag_word" || return 1 ;;
+            +*) _validate_tag_token "$tag_word" || return 1 ;;
             \#*) return 1 ;;
         esac
     done
@@ -219,6 +248,7 @@ add_record() {
     fi
     _validate_description "$description" ||
         _err "description is empty, multiline, or contains an invalid tag"
+    _validate_meta_description "$description"
 
     _append_record "$day" "$hours" "$description"
 }
@@ -320,6 +350,7 @@ _start_timer() {
     fi
     _validate_description "$description" ||
         _err "description is empty, multiline, or contains an invalid tag"
+    _validate_meta_description "$description"
 
     timer_start=$(date '+%s')
     timer_day=$(date '+%Y-%m-%d')
@@ -330,6 +361,7 @@ _start_timer() {
 _stop_timer() {
     _is_timer_active || _err "there is no active timer"
     _read_timer || _err "timer file is malformed: [$trk_timer_file]"
+    _validate_meta_description "$timer_description"
 
     timer_stop=$(date '+%s')
     timer_total_seconds=$((timer_stop - timer_start))
@@ -459,6 +491,188 @@ start_timer_notification() {
         [ "$sleep_seconds" -lt 1 ] && sleep_seconds=1
         sleep "$sleep_seconds"
     done
+}
+
+_meta_stream() {
+    meta_mode=$1
+    meta_filter=${2:-}
+    awk -v mode="$meta_mode" -v wanted="$meta_filter" \
+        -v mapfile="$trkfile" -v program="$scriptname" '
+        function valid_tag(value) {
+            return value ~ /^\+[[:alnum:]_][[:alnum:]_-]*(:[[:alnum:]_][[:alnum:]_-]*)?$/
+        }
+        function valid_meta(value) {
+            return value ~ /^\+\+[[:alnum:]_][[:alnum:]_-]*$/
+        }
+        function tag_name(value, name) {
+            name = value
+            sub(/:.*/, "", name)
+            return name
+        }
+        function error(message) {
+            printf "%s: error: %s\n", program, message > "/dev/stderr"
+            failed = 1
+        }
+        function load_maps(    line, line_number, count, part, key, i, tag,
+                               name, text, bad, seen_tag, seen_name) {
+            while ((getline line < mapfile) > 0) {
+                line_number++
+                if (line !~ /^#[[:space:]]+map:/) continue
+                count = split(line, part, /[[:space:]]+/)
+                if (count < 4 || part[1] != "#" || part[2] != "map:") {
+                    error(mapfile ":" line_number ": malformed mapping")
+                    continue
+                }
+                key = part[3]
+                if (!valid_meta(key)) {
+                    error(mapfile ":" line_number ": invalid meta-tag [" key "]")
+                    continue
+                }
+                if (key in maps) {
+                    error(mapfile ":" line_number ": duplicate mapping for [" key "]")
+                    continue
+                }
+                for (tag in seen_tag) delete seen_tag[tag]
+                for (name in seen_name) delete seen_name[name]
+                text = ""
+                bad = 0
+                for (i = 4; i <= count; i++) {
+                    tag = part[i]
+                    if (!valid_tag(tag)) {
+                        error(mapfile ":" line_number ": invalid mapped tag [" tag "]")
+                        bad = 1
+                        continue
+                    }
+                    name = tag_name(tag)
+                    if (tag in seen_tag) {
+                        error(mapfile ":" line_number ": duplicate mapped tag [" tag "]")
+                        bad = 1
+                    } else if ((name in seen_name) && seen_name[name] != tag) {
+                        error(mapfile ":" line_number ": conflicting mapped tags [" \
+                              seen_name[name] "] and [" tag "]")
+                        bad = 1
+                    }
+                    seen_tag[tag] = 1
+                    seen_name[name] = tag
+                    text = text (text == "" ? "" : " ") tag
+                }
+                if (!bad) {
+                    maps[key] = text
+                    order[++map_count] = key
+                }
+            }
+            close(mapfile)
+        }
+        function process_record(line, line_number,    count, part, i, token,
+                                name, key, map_count_local, mapped, map_index,
+                                tag, bad, has_meta, output, explicit, derived,
+                                emitted) {
+            count = split(line, part, /[[:space:]]+/)
+            if (count < 3) return line
+
+            bad = 0
+            has_meta = 0
+            for (i = 3; i <= count; i++) {
+                token = part[i]
+                if (token ~ /^\+\+/) {
+                    has_meta = 1
+                    if (!valid_meta(token)) {
+                        error("line " line_number ": invalid meta-tag [" token "]")
+                        bad = 1
+                    } else if (!(token in maps)) {
+                        error("line " line_number ": mapping missing for [" token "]")
+                        bad = 1
+                    }
+                } else if (token ~ /^\+/) {
+                    if (!valid_tag(token)) {
+                        error("line " line_number ": invalid tag [" token "]")
+                        bad = 1
+                    } else {
+                        name = tag_name(token)
+                        if ((name in explicit) && explicit[name] != token) {
+                            error("line " line_number ": conflicting tags [" \
+                                  explicit[name] "] and [" token "]")
+                            bad = 1
+                        }
+                        explicit[name] = token
+                    }
+                } else if (token ~ /^#/) {
+                    error("line " line_number ": invalid tag [" token "]")
+                    bad = 1
+                }
+            }
+
+            for (i = 3; i <= count; i++) {
+                key = part[i]
+                if (!valid_meta(key) || !(key in maps)) continue
+                map_count_local = split(maps[key], mapped, " ")
+                for (map_index = 1; map_index <= map_count_local; map_index++) {
+                    tag = mapped[map_index]
+                    name = tag_name(tag)
+                    if ((name in explicit) && explicit[name] != tag) {
+                        error("line " line_number ": [" key "] expands to [" tag \
+                              "] but record contains [" explicit[name] "]")
+                        bad = 1
+                    } else if ((name in derived) && derived[name] != tag) {
+                        error("line " line_number ": meta-tags expand to conflicting tags [" \
+                              derived[name] "] and [" tag "]")
+                        bad = 1
+                    }
+                    derived[name] = tag
+                }
+            }
+            if (bad || !has_meta) return line
+
+            output = part[1] " " part[2]
+            for (i = 3; i <= count; i++) {
+                token = part[i]
+                if (valid_meta(token)) {
+                    if (mode != "materialize") output = output " " token
+                    map_count_local = split(maps[token], mapped, " ")
+                    for (map_index = 1; map_index <= map_count_local; map_index++) {
+                        tag = mapped[map_index]
+                        name = tag_name(tag)
+                        if (!(name in explicit) && !(tag in emitted)) {
+                            output = output " " tag
+                            emitted[tag] = 1
+                        }
+                    }
+                } else {
+                    output = output " " token
+                }
+            }
+            return output
+        }
+        BEGIN {
+            load_maps()
+            if (mode == "maps") {
+                if (wanted != "" && !valid_meta(wanted))
+                    error("invalid meta-tag [" wanted "]")
+                else if (wanted != "" && !(wanted in maps))
+                    error("mapping missing for [" wanted "]")
+                for (i = 1; i <= map_count; i++) {
+                    key = order[i]
+                    if (wanted == "" || wanted == key)
+                        print key " | " maps[key]
+                }
+            }
+        }
+        mode == "maps" { next }
+        /^[[:space:]]*$/ || /^#/ {
+            if (mode == "materialize") print
+            next
+        }
+        {
+            processed = process_record($0, NR)
+            if (mode == "expand" || mode == "materialize") print processed
+        }
+        END { exit failed }
+    '
+}
+
+_validate_meta_description() {
+    printf '2000-01-01 0 %s\n' "$1" | _meta_stream validate >/dev/null ||
+        _err "description contains an invalid or unresolved meta-tag"
 }
 
 _stdin_has_data() {
@@ -592,22 +806,47 @@ _prepare_query() {
         _validate_grep_pattern "$query_pattern"
         _dbg "computed filter: [$query_pattern]"
     fi
+
+    query_tmp=$(mktemp "${TMPDIR:-/tmp}/trk-query.XXXXXX") ||
+        _err "cannot create temporary query file"
+    if ! _read_query_source | _meta_stream expand >"$query_tmp"; then
+        rm -f "$query_tmp"
+        query_tmp=
+        return 1
+    fi
+    if [ -n "$query_filter" ]; then
+        query_filtered="$query_tmp.filtered"
+        grep -e "$query_pattern" "$query_tmp" >"$query_filtered"
+        grep_status=$?
+        if [ "$grep_status" -gt 1 ]; then
+            rm -f "$query_tmp" "$query_filtered"
+            query_tmp=
+            return "$grep_status"
+        fi
+        mv "$query_filtered" "$query_tmp" || {
+            rm -f "$query_tmp" "$query_filtered"
+            query_tmp=
+            return 1
+        }
+    fi
 }
 
 _emit_prepared_query() {
-    if [ -n "$query_filter" ]; then
-        _read_query_source |
-            grep -v -e '^#' -e '^[[:space:]]*$' |
-            grep -e "$query_pattern"
-    else
-        _read_query_source | grep -v -e '^#' -e '^[[:space:]]*$'
-    fi
+    cat "$query_tmp"
+}
+
+_finish_query() {
+    [ -z "${query_tmp:-}" ] || rm -f "$query_tmp"
+    query_tmp=
 }
 
 list_records() {
     _parse_query "$@"
     _prepare_query || return 1
     _emit_prepared_query
+    list_status=$?
+    _finish_query
+    return "$list_status"
 }
 
 _report_records() {
@@ -622,6 +861,9 @@ _report_records() {
         }
         function valid_tag(value) {
             return value ~ /^\+[[:alnum:]_][[:alnum:]_-]*(:[[:alnum:]_][[:alnum:]_-]*)?$/
+        }
+        function valid_meta(value) {
+            return value ~ /^\+\+[[:alnum:]_][[:alnum:]_-]*$/
         }
         function human(hours,    negative, seconds, workday_seconds, days, remainder,
                        hours_part, minutes, seconds_part, result) {
@@ -653,7 +895,8 @@ _report_records() {
             }
             for (field = 3; field <= NF; field++) {
                 first = substr($field, 1, 1)
-                if (first == "#" || (first == "+" && !valid_tag($field))) {
+                if (first == "#" ||
+                    (first == "+" && !valid_tag($field) && !valid_meta($field))) {
                     printf "%s: warn: invalid tag at input line %d: %s\n", program, NR, $field > "/dev/stderr"
                     invalid++
                     next
@@ -697,6 +940,9 @@ report_records() {
     _parse_query "$@"
     _prepare_query || return 1
     _emit_prepared_query | _report_records
+    report_status=$?
+    _finish_query
+    return "$report_status"
 }
 
 _check_stream() {
@@ -749,7 +995,7 @@ _check_stream() {
         check_valid=$((check_valid + 1))
     done
 
-    _info "$check_valid valid record(s), $check_invalid invalid record(s)"
+    _info "$check_valid structurally valid record(s), $check_invalid invalid record(s)"
     [ "$check_invalid" -eq 0 ]
 }
 
@@ -757,11 +1003,72 @@ check_records() {
     _parse_query "$@"
     [ -z "$query_filter" ] || _err "check accepts only --stdin"
     _assert_query_source
+    check_tmp=$(mktemp "${TMPDIR:-/tmp}/trk-check.XXXXXX") ||
+        _err "cannot create temporary check file"
     if [ "$query_source" = - ]; then
-        _check_stream
+        cat >"$check_tmp"
     else
-        _check_stream <"$query_source"
+        cp "$query_source" "$check_tmp" || {
+            rm -f "$check_tmp"
+            _err "cannot copy query source"
+        }
     fi
+    _check_stream <"$check_tmp"
+    check_status=$?
+    _meta_stream validate <"$check_tmp" >/dev/null || check_status=1
+    rm -f "$check_tmp"
+    return "$check_status"
+}
+
+list_mappings() {
+    [ "$#" -le 1 ] || _err "maps accepts at most one meta-tag"
+    [ -r "$trkfile" ] || _err "cannot read trk file: [$trkfile]"
+    _meta_stream maps "${1:-}" </dev/null
+}
+
+materialize_records() {
+    materialize_dry_run=0
+    case ${1:-} in
+        --dry-run) materialize_dry_run=1; shift ;;
+        '') ;;
+        *) _err "materialize accepts only --dry-run" ;;
+    esac
+    [ "$#" -eq 0 ] || _err "materialize accepts only --dry-run"
+    [ -r "$trkfile" ] || _err "cannot read trk file: [$trkfile]"
+
+    materialize_tmp=$(mktemp "${trkfile}.tmp.XXXXXX") ||
+        _err "cannot create temporary file beside [$trkfile]"
+    cp -p "$trkfile" "$materialize_tmp" || {
+        rm -f "$materialize_tmp"
+        _err "cannot preserve trk file permissions"
+    }
+    if ! _meta_stream materialize <"$trkfile" >"$materialize_tmp"; then
+        rm -f "$materialize_tmp"
+        _err "cannot materialize records"
+    fi
+
+    if cmp -s "$trkfile" "$materialize_tmp"; then
+        rm -f "$materialize_tmp"
+        _info "no meta-tags to materialize"
+        return 0
+    fi
+    if [ "$materialize_dry_run" -eq 1 ]; then
+        diff -u "$trkfile" "$materialize_tmp"
+        materialize_status=$?
+        rm -f "$materialize_tmp"
+        [ "$materialize_status" -le 1 ]
+        return
+    fi
+
+    cp -p "$trkfile" "$trkfile.bak" || {
+        rm -f "$materialize_tmp"
+        _err "cannot create backup: [$trkfile.bak]"
+    }
+    mv "$materialize_tmp" "$trkfile" || {
+        rm -f "$materialize_tmp"
+        _err "cannot replace trk file"
+    }
+    _info "meta-tags materialized; backup: $trkfile.bak"
 }
 
 edit_trkfile() {
@@ -835,6 +1142,8 @@ main() {
             report_records "$@"
             ;;
         check) check_records "$@" ;;
+        maps) list_mappings "$@" ;;
+        materialize) materialize_records "$@" ;;
         e|edit) edit_trkfile ;;
         g|git) git_command "$@" ;;
         y|sync) sync_trkfile "$@" ;;
