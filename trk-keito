@@ -1,6 +1,6 @@
 #!/bin/sh
 
-version="0.4.1"
+version="0.4.2"
 required_trk_version="0.7.0"
 dependencies="curl jq trk"
 
@@ -92,7 +92,7 @@ helpmsg() {
 
     Keito tasks are workspace-global, so a task never implies a project. A
     record carrying only one of the two tags is an error and aborts plan/sync.
-    Every other +tag is stripped from the Keito notes.
+    Every other +tag and every ++meta-tag is stripped from the Keito notes.
 
     2026-08-31 1.5 $trk_billable_tag $trk_task_tag:task_123 $trk_project_tag:project_456 fix importer
         -> 2026-08-31, 1.50h, task_123, project_456, billable, 'fix importer'
@@ -669,7 +669,7 @@ refresh_inventories() {
 
 _normalization_awk='
     function is_tag(word) {
-        return word ~ /^\+[[:alnum:]_][[:alnum:]_-]*(:[[:alnum:]_][[:alnum:]_-]*)?$/
+        return word ~ /^\+\+?[[:alnum:]_][[:alnum:]_-]*(:[[:alnum:]_][[:alnum:]_-]*)?$/
     }
     function normalise_notes(text,   parts, count, i, result) {
         count = split(text, parts, /[ \t]+/); result = ""
