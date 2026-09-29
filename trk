@@ -1,6 +1,6 @@
 #!/bin/sh
 
-version="0.8.0"
+version="0.9.0"
 trkfile="${TRK_FILE:-$HOME/.trkfile}"
 trk_workday_hours="${TRK_WORKDAY_HOURS:-8}"
 editor="${VISUAL:-${EDITOR:-vi}}"
@@ -34,7 +34,7 @@ usage() {
     $scriptname l [--stdin] [--grep|--date] [filter]
         lists records, optionally filtered by a grep pattern or date expression
     $scriptname r [--stdin] [--grep|--date] [filter]
-        reports total time, chargeability and per-tag totals
+        reports total time, chargeability, tags and incomplete workdays
         input defaults to TRK_FILE; a real pipe/redirection is detected automatically
     $scriptname check [--stdin]
         validates records, tags and meta-tag mappings
@@ -88,6 +88,11 @@ Filtering:
     --date forces date interpretation.
     --stdin forces stdin. It is useful in non-interactive environments, although
     pipes and regular-file redirections are normally detected automatically.
+
+Workday audit:
+    Reports mark each selected day whose records do not add up to
+    TRK_WORKDAY_HOURS. The delta is negative for missing time and positive for
+    excess time. Comparisons are rounded to the nearest second.
 
 Examples:
     $scriptname a today 2.5 '+billable +client:acme implementation'
@@ -206,6 +211,15 @@ _validate_config() {
         _err "TRK_WORKDAY_HOURS must be greater than zero: [$trk_workday_hours]"
 }
 
+_prepare_description() {
+    description=$1
+    _validate_env_tags
+    [ -z "${TRK_TAGS:-}" ] || description="$TRK_TAGS $description"
+    _validate_description "$description" ||
+        _err "description is empty, multiline, or contains an invalid tag"
+    _validate_meta_description "$description"
+}
+
 _is_timer_active() {
     [ -f "$trk_timer_file" ]
 }
@@ -236,19 +250,11 @@ add_record() {
     day=$1
     hours=$2
     shift 2
-    description=$*
 
     _validate_date "$day" || _err "date [$day] is not valid"
     day=$(_normalize_date "$day") || _err "cannot normalize date [$day]"
     _validate_hours "$hours" || _err "hours [$hours] is not a valid number"
-    _validate_env_tags
-
-    if [ -n "${TRK_TAGS:-}" ]; then
-        description="$TRK_TAGS $description"
-    fi
-    _validate_description "$description" ||
-        _err "description is empty, multiline, or contains an invalid tag"
-    _validate_meta_description "$description"
+    _prepare_description "$*"
 
     _append_record "$day" "$hours" "$description"
 }
@@ -329,7 +335,8 @@ _write_timer() {
     timer_day=$2
     timer_description=$3
     _ensure_trk_directory
-    timer_tmp="$trk_timer_file.$$"
+    timer_tmp=$(mktemp "${trk_timer_file}.tmp.XXXXXX") ||
+        _err "cannot create temporary timer file"
 
     printf '%s\t%s\t%s\n' "$timer_start" "$timer_day" "$timer_description" >"$timer_tmp" || {
         rm -f "$timer_tmp"
@@ -343,14 +350,7 @@ _write_timer() {
 
 _start_timer() {
     [ "$#" -gt 0 ] || _err "add a description to the timer"
-    description=$*
-    _validate_env_tags
-    if [ -n "${TRK_TAGS:-}" ]; then
-        description="$TRK_TAGS $description"
-    fi
-    _validate_description "$description" ||
-        _err "description is empty, multiline, or contains an invalid tag"
-    _validate_meta_description "$description"
+    _prepare_description "$*"
 
     timer_start=$(date '+%s')
     timer_day=$(date '+%Y-%m-%d')
@@ -627,7 +627,6 @@ _meta_stream() {
             for (i = 3; i <= count; i++) {
                 token = part[i]
                 if (valid_meta(token)) {
-                    if (mode != "materialize") output = output " " token
                     map_count_local = split(maps[token], mapped, " ")
                     for (map_index = 1; map_index <= map_count_local; map_index++) {
                         tag = mapped[map_index]
@@ -831,23 +830,23 @@ _prepare_query() {
     fi
 }
 
-_emit_prepared_query() {
-    cat "$query_tmp"
-}
-
 _finish_query() {
     [ -z "${query_tmp:-}" ] || rm -f "$query_tmp"
     query_tmp=
 }
 
-list_records() {
+_process_query() {
+    query_handler=$1
+    shift
     _parse_query "$@"
     _prepare_query || return 1
-    _emit_prepared_query
-    list_status=$?
+    "$query_handler" <"$query_tmp"
+    query_status=$?
     _finish_query
-    return "$list_status"
+    return "$query_status"
 }
+
+list_records() { _process_query cat "$@"; }
 
 _report_records() {
     awk -v workday="$trk_workday_hours" \
@@ -887,6 +886,12 @@ _report_records() {
         function format_hours(value) {
             return numeric != "" ? sprintf("%.2f", value) : human(value)
         }
+        function round_seconds(hours) {
+            return int(hours * 3600 + (hours < 0 ? -0.5 : 0.5))
+        }
+        function signed_hours(hours) {
+            return (hours > 0 ? "+" : "") format_hours(hours)
+        }
         {
             if (NF < 3 || !valid_date($1) || !valid_hours($2)) {
                 printf "%s: warn: invalid record at input line %d: %s\n", program, NR, $0 > "/dev/stderr"
@@ -904,6 +909,7 @@ _report_records() {
             }
             value = $2 + 0
             total += value
+            day_totals[$1] += value
             valid++
             for (seen_tag in seen) delete seen[seen_tag]
             for (field = 3; field <= NF; field++) {
@@ -926,6 +932,21 @@ _report_records() {
             }
             if (tag_count) close(sort_command)
             print ""
+            workday_seconds = round_seconds(workday)
+            incomplete_count = 0
+            for (day in day_totals) {
+                day_seconds = round_seconds(day_totals[day])
+                if (day_seconds != workday_seconds) {
+                    delta = (day_seconds - workday_seconds) / 3600
+                    print "incomplete_day: " day " " format_hours(day_totals[day]) \
+                          " delta:" signed_hours(delta) | sort_command
+                    incomplete_count++
+                }
+            }
+            if (incomplete_count) {
+                close(sort_command)
+                print ""
+            }
             print "tot_spent: " format_hours(total)
             billable = totals["+billable"] + 0
             percentage = total == 0 ? 0 : billable * 100 / total
@@ -937,12 +958,7 @@ _report_records() {
 }
 
 report_records() {
-    _parse_query "$@"
-    _prepare_query || return 1
-    _emit_prepared_query | _report_records
-    report_status=$?
-    _finish_query
-    return "$report_status"
+    _process_query _report_records "$@"
 }
 
 _check_stream() {
@@ -1003,20 +1019,18 @@ check_records() {
     _parse_query "$@"
     [ -z "$query_filter" ] || _err "check accepts only --stdin"
     _assert_query_source
-    check_tmp=$(mktemp "${TMPDIR:-/tmp}/trk-check.XXXXXX") ||
-        _err "cannot create temporary check file"
+    check_source=$query_source
+    check_tmp=
     if [ "$query_source" = - ]; then
+        check_tmp=$(mktemp "${TMPDIR:-/tmp}/trk-check.XXXXXX") ||
+            _err "cannot create temporary check file"
         cat >"$check_tmp"
-    else
-        cp "$query_source" "$check_tmp" || {
-            rm -f "$check_tmp"
-            _err "cannot copy query source"
-        }
+        check_source=$check_tmp
     fi
-    _check_stream <"$check_tmp"
+    _check_stream <"$check_source"
     check_status=$?
-    _meta_stream validate <"$check_tmp" >/dev/null || check_status=1
-    rm -f "$check_tmp"
+    _meta_stream validate <"$check_source" >/dev/null || check_status=1
+    [ -z "$check_tmp" ] || rm -f "$check_tmp"
     return "$check_status"
 }
 

@@ -3,6 +3,9 @@ core_name := "trk"
 @_default:
     just -f {{justfile()}} --list
 
+test:
+    ./tests/run
+
 link bindir='$HOME/bin':
     #!/bin/sh
     bindir="{{bindir}}"

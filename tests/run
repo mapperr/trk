@@ -1,0 +1,409 @@
+#!/bin/sh
+
+# Black-box regression suite for trk. It intentionally uses only POSIX shell
+# plus the commands required by trk itself.
+
+set -u
+
+tests_dir=$(CDPATH= cd -- "$(dirname "$0")" && pwd) || exit 1
+project_dir=$(dirname "$tests_dir")
+trk="$project_dir/trk"
+test_root=$(mktemp -d "${TMPDIR:-/tmp}/trk-tests.XXXXXX") || exit 1
+
+cleanup() {
+    case $test_root in
+        "${TMPDIR:-/tmp}"/trk-tests.*) rm -rf "$test_root" ;;
+    esac
+}
+trap 'cleanup' 0
+trap 'cleanup; exit 130' HUP INT TERM
+
+total=0
+passed=0
+failed=0
+
+new_case() {
+    case_dir="$test_root/$total"
+    mkdir -p "$case_dir/tmp" "$case_dir/bin" || return 1
+    trkfile="$case_dir/trkfile"
+    stdout="$case_dir/stdout"
+    stderr="$case_dir/stderr"
+    status=0
+    test_tags=
+    test_numeric=
+    test_workday=8
+    test_path="$case_dir/bin:$PATH"
+    test_visual=
+    test_editor=vi
+}
+
+run_trk() {
+    TRK_FILE="$trkfile" \
+    TRK_TAGS="$test_tags" \
+    TRK_UNFRIENDLY="$test_numeric" \
+    TRK_WORKDAY_HOURS="$test_workday" \
+    TMPDIR="$case_dir/tmp" \
+    PATH="$test_path" \
+    VISUAL="$test_visual" \
+    EDITOR="$test_editor" \
+    TRK_TEST_EDITOR_LOG="$case_dir/editor.log" \
+        "$trk" "$@" >"$stdout" 2>"$stderr"
+    status=$?
+    return 0
+}
+
+run_trk_stdin() {
+    input_file=$1
+    shift
+    TRK_FILE="$trkfile" \
+    TRK_TAGS="$test_tags" \
+    TRK_UNFRIENDLY="$test_numeric" \
+    TRK_WORKDAY_HOURS="$test_workday" \
+    TMPDIR="$case_dir/tmp" \
+    PATH="$test_path" \
+    VISUAL="$test_visual" \
+    EDITOR="$test_editor" \
+    TRK_TEST_EDITOR_LOG="$case_dir/editor.log" \
+        "$trk" "$@" <"$input_file" >"$stdout" 2>"$stderr"
+    status=$?
+    return 0
+}
+
+fail() {
+    printf '      %s\n' "$*" >&2
+    return 1
+}
+
+assert_status() {
+    [ "$status" -eq "$1" ] || fail "expected status $1, got $status; stderr: $(command cat "$stderr")"
+}
+
+assert_eq() {
+    [ "$1" = "$2" ] || fail "expected [$1], got [$2]"
+}
+
+assert_file_eq() {
+    expected_content=$1
+    actual_content=$(command cat "$2")
+    assert_eq "$expected_content" "$actual_content"
+}
+
+assert_contains() {
+    grep -F -e "$1" "$2" >/dev/null 2>&1 || fail "[$1] not found in $2"
+}
+
+assert_not_contains() {
+    if grep -F -e "$1" "$2" >/dev/null 2>&1; then
+        fail "unexpected [$1] found in $2"
+    fi
+}
+
+assert_matches() {
+    grep -E -e "$1" "$2" >/dev/null 2>&1 || fail "pattern [$1] not found in $2"
+}
+
+run_test() {
+    test_name=$1
+    shift
+    total=$((total + 1))
+    if "$@"; then
+        passed=$((passed + 1))
+        printf 'ok %d - %s\n' "$total" "$test_name"
+    else
+        failed=$((failed + 1))
+        printf 'not ok %d - %s\n' "$total" "$test_name"
+    fi
+}
+
+test_help_and_version() {
+    new_case || return 1
+    run_trk --version
+    assert_status 0 || return 1
+    assert_matches '^trk [0-9]+\.[0-9]+\.[0-9]+$' "$stdout" || return 1
+    run_trk help
+    assert_status 0 || return 1
+    assert_contains 'trk maps [++meta-tag]' "$stdout" || return 1
+    assert_contains 'trk materialize [--dry-run]' "$stdout"
+}
+
+test_add_and_environment_tags() {
+    new_case || return 1
+    printf '%s\n' '# map: ++work +client:acme +billable' >"$trkfile"
+    test_tags='+team:core'
+    run_trk add 2026-09-01 2 ++work implemented parser
+    assert_status 0 || return 1
+    assert_file_eq '# map: ++work +client:acme +billable
+2026-09-01 2 +team:core ++work implemented parser' "$trkfile"
+}
+
+test_add_rejects_invalid_input() {
+    new_case || return 1
+    : >"$trkfile"
+    run_trk add 2026-02-30 1 impossible
+    [ "$status" -ne 0 ] || return 1
+    run_trk add 2026-09-01 nope invalid-hours
+    [ "$status" -ne 0 ] || return 1
+    run_trk add 2026-09-01 1 +bad:value:again invalid-tag
+    [ "$status" -ne 0 ] || return 1
+    run_trk add 2026-09-01 1 ++missing unresolved-map
+    [ "$status" -ne 0 ] || return 1
+    [ ! -s "$trkfile" ]
+}
+
+test_list_expands_and_omits_meta_tags() {
+    new_case || return 1
+    printf '%s\n' \
+        '# map: ++work +client:acme +billable' \
+        '# comment' \
+        '2026-09-01 3 ++work +task:one first record' \
+        '2026-09-02 2 +client:other second record' >"$trkfile"
+    run_trk list
+    assert_status 0 || return 1
+    assert_file_eq '2026-09-01 3 +client:acme +billable +task:one first record
+2026-09-02 2 +client:other second record' "$stdout" || return 1
+    assert_not_contains '++work' "$stdout" || return 1
+    run_trk list --grep +client:acme
+    assert_status 0 || return 1
+    assert_file_eq '2026-09-01 3 +client:acme +billable +task:one first record' "$stdout" || return 1
+    run_trk list --date 2026-09-02
+    assert_file_eq '2026-09-02 2 +client:other second record' "$stdout"
+}
+
+test_list_reads_redirected_input() {
+    new_case || return 1
+    printf '%s\n' '# map: ++work +client:acme' >"$trkfile"
+    printf '%s\n' '2026-09-03 1 ++work piped record' >"$case_dir/input"
+    run_trk_stdin "$case_dir/input" list
+    assert_status 0 || return 1
+    assert_file_eq '2026-09-03 1 +client:acme piped record' "$stdout"
+}
+
+test_report_totals_tags_and_chargeability() {
+    new_case || return 1
+    printf '%s\n' \
+        '2026-09-01 3 +billable +client:acme first' \
+        '2026-09-01 5 +billable +client:acme second' \
+        '2026-09-02 2 +client:acme third' \
+        '2026-09-03 4 +focus +focus duplicate-tag' >"$trkfile"
+    test_numeric=1
+    run_trk report
+    assert_status 0 || return 1
+    assert_contains 'tag: +billable 8.00' "$stdout" || return 1
+    assert_contains 'tag: +client:acme 10.00' "$stdout" || return 1
+    assert_contains 'tag: +focus 4.00' "$stdout" || return 1
+    assert_contains 'tot_spent: 14.00' "$stdout" || return 1
+    assert_contains 'tot_chargeability: 57.14%' "$stdout"
+}
+
+test_report_reads_explicit_stdin() {
+    new_case || return 1
+    : >"$trkfile"
+    printf '%s\n' \
+        '2026-09-01 2 +billable piped' \
+        '2026-09-01 6 plain' >"$case_dir/input"
+    test_numeric=1
+    run_trk_stdin "$case_dir/input" report --stdin
+    assert_status 0 || return 1
+    assert_contains 'tot_spent: 8.00' "$stdout" || return 1
+    assert_contains 'tot_chargeability: 25.00%' "$stdout"
+}
+
+test_report_marks_incomplete_workdays() {
+    new_case || return 1
+    printf '%s\n' \
+        '2026-09-01 3 first-complete-part' \
+        '2026-09-01 5 second-complete-part' \
+        '2026-09-02 7 missing-one-hour' \
+        '2026-09-03 9 extra-one-hour' >"$trkfile"
+    test_numeric=1
+    run_trk report
+    assert_status 0 || return 1
+    assert_not_contains 'incomplete_day: 2026-09-01' "$stdout" || return 1
+    assert_contains 'incomplete_day: 2026-09-02 7.00 delta:-1.00' "$stdout" || return 1
+    assert_contains 'incomplete_day: 2026-09-03 9.00 delta:+1.00' "$stdout"
+}
+
+test_workday_audit_honours_custom_hours() {
+    new_case || return 1
+    printf '%s\n' \
+        '2026-09-01 3.25 first-complete-part' \
+        '2026-09-01 4.25 second-complete-part' \
+        '2026-09-02 6.5 incomplete' >"$trkfile"
+    test_numeric=1
+    test_workday=7.5
+    run_trk report
+    assert_status 0 || return 1
+    assert_not_contains 'incomplete_day: 2026-09-01' "$stdout" || return 1
+    assert_contains 'incomplete_day: 2026-09-02 6.50 delta:-1.00' "$stdout"
+}
+
+test_workday_audit_uses_selected_records() {
+    new_case || return 1
+    printf '%s\n' \
+        '2026-09-01 4 +project:alpha alpha' \
+        '2026-09-01 4 +project:beta beta' >"$trkfile"
+    test_numeric=1
+    run_trk report
+    assert_not_contains 'incomplete_day:' "$stdout" || return 1
+    run_trk report --grep +project:alpha
+    assert_status 0 || return 1
+    assert_contains 'incomplete_day: 2026-09-01 4.00 delta:-4.00' "$stdout"
+}
+
+test_check_valid_and_invalid_records() {
+    new_case || return 1
+    printf '%s\n' \
+        '# map: ++work +client:acme' \
+        '2026-09-01 8 ++work valid' >"$trkfile"
+    run_trk check
+    assert_status 0 || return 1
+    assert_contains '1 structurally valid record(s), 0 invalid record(s)' "$stderr" || return 1
+    printf '%s\n' '2026-02-30 1 invalid-date' >>"$trkfile"
+    run_trk check
+    [ "$status" -ne 0 ] || return 1
+    assert_contains 'invalid date [2026-02-30]' "$stderr"
+}
+
+test_mapping_inventory_and_missing_mapping() {
+    new_case || return 1
+    printf '%s\n' \
+        '# map: ++work +client:acme +billable' \
+        '# map: ++internal +client:acme +internal' >"$trkfile"
+    run_trk maps
+    assert_status 0 || return 1
+    assert_file_eq '++work | +client:acme +billable
+++internal | +client:acme +internal' "$stdout" || return 1
+    run_trk maps ++work
+    assert_file_eq '++work | +client:acme +billable' "$stdout" || return 1
+    run_trk maps ++missing
+    [ "$status" -ne 0 ] || return 1
+    assert_contains 'mapping missing for [++missing]' "$stderr"
+}
+
+test_conflicting_mapping_is_rejected() {
+    new_case || return 1
+    printf '%s\n' \
+        '# map: ++work +client:acme +billable' \
+        '2026-09-01 1 ++work +client:other conflict' >"$trkfile"
+    run_trk list
+    [ "$status" -ne 0 ] || return 1
+    assert_contains 'expands to [+client:acme]' "$stderr"
+}
+
+test_materialize_dry_run_and_apply() {
+    new_case || return 1
+    original='# map: ++work +client:acme +billable
+2026-09-01 8 ++work completed day'
+    printf '%s\n' "$original" >"$trkfile"
+    run_trk materialize --dry-run
+    assert_status 0 || return 1
+    assert_file_eq "$original" "$trkfile" || return 1
+    assert_contains '+2026-09-01 8 +client:acme +billable completed day' "$stdout" || return 1
+    run_trk materialize
+    assert_status 0 || return 1
+    assert_file_eq "$original" "$trkfile.bak" || return 1
+    assert_file_eq '# map: ++work +client:acme +billable
+2026-09-01 8 +client:acme +billable completed day' "$trkfile" || return 1
+    run_trk materialize
+    assert_contains 'no meta-tags to materialize' "$stderr"
+}
+
+test_timer_start_status_and_short_stop() {
+    new_case || return 1
+    : >"$trkfile"
+    run_trk start +task:test timer task
+    assert_status 0 || return 1
+    [ -f "$trkfile.timer" ] || return 1
+    run_trk status
+    assert_status 0 || return 1
+    assert_contains '+task:test timer task' "$stdout" || return 1
+    run_trk stop
+    assert_status 0 || return 1
+    [ ! -f "$trkfile.timer" ] || return 1
+    [ ! -s "$trkfile" ] || return 1
+    assert_contains 'timer lasted less than one minute' "$stderr"
+}
+
+test_timer_stop_creates_record() {
+    new_case || return 1
+    : >"$trkfile"
+    start_epoch=$(($(date '+%s') - 120))
+    start_day=$(date -d "@$start_epoch" '+%Y-%m-%d') || return 1
+    printf '%s\t%s\t%s\n' "$start_epoch" "$start_day" '+task:test elapsed timer' >"$trkfile.timer"
+    run_trk stop
+    assert_status 0 || return 1
+    [ ! -f "$trkfile.timer" ] || return 1
+    assert_contains '+task:test elapsed timer' "$trkfile" || return 1
+    awk '$2 > 0 { found=1 } END { exit !found }' "$trkfile"
+}
+
+test_invalid_workday_is_rejected() {
+    new_case || return 1
+    printf '%s\n' '2026-09-01 1 record' >"$trkfile"
+    test_workday=0
+    run_trk report
+    [ "$status" -ne 0 ] || return 1
+    assert_contains 'TRK_WORKDAY_HOURS must be greater than zero' "$stderr"
+}
+
+test_invalid_grep_is_rejected() {
+    new_case || return 1
+    printf '%s\n' '2026-09-01 1 record' >"$trkfile"
+    run_trk list --grep '['
+    [ "$status" -ne 0 ] || return 1
+    assert_contains 'invalid grep pattern' "$stderr"
+}
+
+test_plugin_dispatch() {
+    new_case || return 1
+    printf '%s\n' '#!/bin/sh' 'printf "plugin:%s\n" "$*"' >"$case_dir/bin/trk-demo"
+    chmod +x "$case_dir/bin/trk-demo"
+    run_trk demo one two
+    assert_status 0 || return 1
+    assert_file_eq 'plugin:one two' "$stdout"
+}
+
+test_extension_helper_bridge() {
+    new_case || return 1
+    run_trk run _friendly_seconds 3600
+    assert_status 0 || return 1
+    assert_file_eq '1h' "$stdout"
+}
+
+test_editor_dispatch() {
+    new_case || return 1
+    printf '%s\n' \
+        '#!/bin/sh' \
+        'printf "%s\n" "$1" >"$TRK_TEST_EDITOR_LOG"' >"$case_dir/bin/test-editor"
+    chmod +x "$case_dir/bin/test-editor"
+    test_visual="$case_dir/bin/test-editor"
+    run_trk edit
+    assert_status 0 || return 1
+    assert_file_eq "$trkfile" "$case_dir/editor.log"
+}
+
+run_test 'help and version' test_help_and_version
+run_test 'add and TRK_TAGS' test_add_and_environment_tags
+run_test 'invalid additions are rejected' test_add_rejects_invalid_input
+run_test 'list expands and omits meta-tags' test_list_expands_and_omits_meta_tags
+run_test 'list reads redirected input' test_list_reads_redirected_input
+run_test 'report totals, tags and chargeability' test_report_totals_tags_and_chargeability
+run_test 'report reads explicit stdin' test_report_reads_explicit_stdin
+run_test 'report marks incomplete workdays' test_report_marks_incomplete_workdays
+run_test 'workday audit honours custom hours' test_workday_audit_honours_custom_hours
+run_test 'workday audit uses selected records' test_workday_audit_uses_selected_records
+run_test 'check accepts valid and rejects invalid records' test_check_valid_and_invalid_records
+run_test 'mapping inventory and missing mapping' test_mapping_inventory_and_missing_mapping
+run_test 'mapping conflicts are rejected' test_conflicting_mapping_is_rejected
+run_test 'materialize dry-run and apply' test_materialize_dry_run_and_apply
+run_test 'timer start, status and short stop' test_timer_start_status_and_short_stop
+run_test 'timer stop creates a record' test_timer_stop_creates_record
+run_test 'invalid workday is rejected' test_invalid_workday_is_rejected
+run_test 'invalid grep is rejected' test_invalid_grep_is_rejected
+run_test 'extension dispatch' test_plugin_dispatch
+run_test 'extension helper bridge' test_extension_helper_bridge
+run_test 'editor dispatch' test_editor_dispatch
+
+printf '1..%d\n' "$total"
+printf '# %d passed, %d failed\n' "$passed" "$failed"
+[ "$failed" -eq 0 ]
